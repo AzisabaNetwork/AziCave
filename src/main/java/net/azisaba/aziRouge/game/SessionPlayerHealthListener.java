@@ -1,12 +1,17 @@
 package net.azisaba.aziRouge.game;
 
+import org.bukkit.Material;
 import org.bukkit.damage.DamageType;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityRegainHealthEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.inventory.ItemStack;
+
+import java.util.List;
 
 public final class SessionPlayerHealthListener implements Listener {
     private final GameSessionManager sessionManager;
@@ -45,8 +50,26 @@ public final class SessionPlayerHealthListener implements Listener {
         event.setCancelled(true);
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerDeath(PlayerDeathEvent event) {
-        sessionManager.handlePlayerDeath(event.getEntity());
+        Player player = event.getEntity();
+        GameSession session = sessionManager.sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session != null && session.state() == SessionState.IN_ROUND
+                && session.alivePlayers().contains(player.getUniqueId())
+                && session.world().getUID().equals(player.getWorld().getUID())) {
+            event.setKeepInventory(false);
+            event.getItemsToKeep().clear();
+            restoreDropsIfEmpty(event.getDrops(), player.getInventory().getContents());
+        }
+        sessionManager.handlePlayerDeath(player);
+    }
+
+    static void restoreDropsIfEmpty(List<ItemStack> drops, ItemStack[] contents) {
+        if (!drops.isEmpty()) return;
+        for (ItemStack item : contents) {
+            if (item != null && item.getType() != Material.AIR) {
+                drops.add(item.clone());
+            }
+        }
     }
 }

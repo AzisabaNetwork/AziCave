@@ -377,6 +377,8 @@ public final class RoundTimeService implements Listener {
     private void configureWorld(World world) {
         world.setGameRule(GameRules.ADVANCE_TIME, true);
         world.setGameRule(GameRules.ADVANCE_WEATHER, true);
+        world.setGameRule(GameRules.KEEP_INVENTORY, false);
+        world.setGameRule(GameRules.LOCATOR_BAR, false);
         world.setGameRule(GameRules.PLAYERS_SLEEPING_PERCENTAGE, 100);
     }
 

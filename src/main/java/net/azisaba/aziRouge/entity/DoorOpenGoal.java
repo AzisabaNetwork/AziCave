@@ -7,6 +7,7 @@ import com.destroystokyo.paper.entity.ai.GoalType;
 import com.destroystokyo.paper.entity.ai.VanillaGoal;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Tag;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
@@ -49,7 +50,7 @@ public class DoorOpenGoal implements Goal<Mob> {
             if (!(block.getBlockData() instanceof Door)) {
                 block = block.getRelative(BlockFace.UP);
             }
-            if (block.getBlockData() instanceof Door door) {
+            if (block.getBlockData() instanceof Door door && Tag.WOODEN_DOORS.isTagged(block.getType())) {
                 targetDoor = door.getHalf() == Door.Half.TOP
                         ? block.getRelative(BlockFace.DOWN) : block;
                 return true;
