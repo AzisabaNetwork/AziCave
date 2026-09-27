@@ -1,5 +1,7 @@
 package net.azisaba.aziRouge.game;
 
+import net.azisaba.aziRouge.config.GuiSettings;
+
 final class DepartureGuard {
     private DepartureGuard() {}
 
@@ -15,7 +17,10 @@ final class DepartureGuard {
         return Math.max(1, currentDay);
     }
 
-    static boolean validDepth(Float depth, int maximum) {
-        return depth != null && Float.isFinite(depth) && depth >= 1 && depth <= maximum && depth == Math.floor(depth);
+    static java.util.OptionalInt selectedDepth(String option, java.util.List<GuiSettings.DangerLevel> levels) {
+        return levels.stream()
+                .filter(level -> String.valueOf(level.depth()).equals(option))
+                .mapToInt(GuiSettings.DangerLevel::depth)
+                .findFirst();
     }
 }

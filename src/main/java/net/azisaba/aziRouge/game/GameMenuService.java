@@ -6,6 +6,7 @@ import io.papermc.paper.registry.data.dialog.DialogBase;
 import io.papermc.paper.registry.data.dialog.action.DialogAction;
 import io.papermc.paper.registry.data.dialog.body.DialogBody;
 import io.papermc.paper.registry.data.dialog.input.DialogInput;
+import io.papermc.paper.registry.data.dialog.input.SingleOptionDialogInput;
 import io.papermc.paper.registry.data.dialog.type.DialogType;
 import net.azisaba.aziRouge.AziRouge;
 import net.azisaba.aziRouge.config.GuiSettings;
@@ -161,11 +162,11 @@ public final class GameMenuService implements Listener {
         departureOffers.put(player.getUniqueId(), offer);
         ActionButton depart = ActionButton.create(message("journey.depart", "出発"), null, 160,
                 DialogAction.customClick((view, audience) -> {
-                    Float depth = view.getFloat("depth");
+                    java.util.OptionalInt depth = DepartureGuard.selectedDepth(view.getText("depth"), plugin.settings().gui().dangerLevels());
                     if (audience instanceof Player current && current.getUniqueId().equals(player.getUniqueId())
-                            && DepartureGuard.validDepth(depth, plugin.settings().gui().maxDepth())) {
+                            && depth.isPresent()) {
                         org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
-                            if (offer.equals(departureOffers.get(current.getUniqueId()))) depart(current, session, round, depth.intValue(), offer);
+                            if (offer.equals(departureOffers.get(current.getUniqueId()))) depart(current, session, round, depth.getAsInt(), offer);
                         });
                     }
                 }, ClickCallback.Options.builder().uses(1).build()));
@@ -173,7 +174,7 @@ public final class GameMenuService implements Listener {
         showDialog(
                 player,
                 message("journey.depart", "出発"),
-                text(plugin.messages().format("journey.depart-description-details", "深さを選んで出発する。深いほどダンジョンは広くなり、宝、宝箱、罠が増える。採掘できる鉱石と敵のドロップも変わる。\n探索中の持ち物は、ほぼホットバーの9枠だけだ。\n今日のノルマ {quota}  /  共有資金 {balance}",
+                text(plugin.messages().format("journey.depart-description-details", "危険度を選んで出発する。危険なほどダンジョンは広くなり、宝、宝箱、罠が増える。採掘できる鉱石と敵のドロップも変わる。\n探索中の持ち物は、ほぼホットバーの9枠だけだ。\n今日のノルマ {quota}  /  共有資金 {balance}",
                         "quota", plugin.economyService().quotaForRound(DepartureGuard.dayToStart(round)), "balance", session.sharedBalance())),
                 List.of(depthInput()),
                 List.of(depart),
@@ -244,7 +245,7 @@ public final class GameMenuService implements Listener {
 
     private void showJourneyHelp(Player player) {
         showDialog(player, message("journey.help", "遊び方"),
-                text(plugin.messages().format("journey.help-body-v2", "商人を右クリックすると買い物できる。お金は仲間と共有だ。探索中の持ち物は、ほぼホットバーの9枠だけ。\n出発では深さを選ぶ。深いほど広くなり、宝、宝箱、罠、採掘物、ドロップが変わる。\n持ち帰った宝は納品箱に入れた分だけ精算される。評価額がノルマ以上なら達成だ。\n生存者の{percentage}%以上が{seconds}秒眠るか、全員が眠ると翌朝になる。{deadline}までに眠れていないと、その日は脱落だ。",
+                text(plugin.messages().format("journey.help-body-v2", "商人を右クリックすると買い物できる。お金は仲間と共有だ。探索中の持ち物は、ほぼホットバーの9枠だけ。\n出発では危険度を選ぶ。危険なほど広くなり、宝、宝箱、罠、採掘物、ドロップが変わる。\n持ち帰った宝は納品箱に入れた分だけ精算される。評価額がノルマ以上なら達成だ。\n生存者の{percentage}%以上が{seconds}秒眠るか、全員が眠ると翌朝になる。{deadline}までに眠れていないと、その日は脱落だ。",
                         "percentage", plugin.settings().roundTiming().minimumSleepingPercentage(),
                         "seconds", plugin.settings().roundTiming().sleepDelaySeconds(),
                         "deadline", RoundClock.format(plugin.settings().roundTiming().deadlineTimeTicks()))),
@@ -277,7 +278,7 @@ public final class GameMenuService implements Listener {
             actions.add(menuAction(label("menu.join-session", "セッションに入る"), label("menu.tooltip.join-session-open", "IDを入れて参加する。"), this::showJoinSessionDialog));
             actions.add(menuAction(label("menu.create-session", "セッションを作る"), label("menu.tooltip.create-session-open", "作成の確認を開く。"), this::showCreateSessionDialog));
         } else if (session.state() == SessionState.LOBBY) {
-            actions.add(menuAction(label("menu.start-round", "探索を始める"), label("menu.tooltip.start-round-open", "深さを選んで出発する。"), this::showStartRoundDialog));
+            actions.add(menuAction(label("menu.start-round", "探索を始める"), label("menu.tooltip.start-round-open", "危険度を選んで出発する。"), this::showStartRoundDialog));
             actions.add(menuAction(label("menu.leave-session", "セッションを出る"), label("menu.tooltip.leave-session-open", "退出の確認を開く。"), this::showLeaveSessionConfirmation));
         } else if (session.state() == SessionState.IN_ROUND) {
             actions.add(menuAction(label("menu.end-round", "帰り方"), label("menu.tooltip.end-round-open", "納品と就寝の手順を見る。"), this::showEndRoundConfirmation));
@@ -391,16 +392,13 @@ public final class GameMenuService implements Listener {
 
     private DialogInput depthInput() {
         GuiSettings settings = plugin.settings().gui();
-        return DialogInput.numberRange(
-                "depth",
-                200,
-                message("menu.depth", "深さ"),
-                "%s: %s",
-                1.0F,
-                settings.maxDepth(),
-                (float) settings.defaultDepth(),
-                1.0F
-        );
+        List<SingleOptionDialogInput.OptionEntry> entries = settings.dangerLevels().stream()
+                .map(level -> SingleOptionDialogInput.OptionEntry.create(
+                        String.valueOf(level.depth()),
+                        text(plugin.messages().format("menu.danger-option", "危険度：{desc}", "desc", level.desc())),
+                        level.depth() == settings.defaultDepth()))
+                .toList();
+        return DialogInput.singleOption("depth", 200, entries, message("menu.depth", "危険度"), false);
     }
 
     private String menuDescription(GameSession session) {
@@ -420,11 +418,11 @@ public final class GameMenuService implements Listener {
             return label("menu.description.round-no-session", "セッションに入っていない。先に作るか参加して。");
         }
         return plugin.messages().format("menu.description.round",
-                "セッション {session}\n状態 {state}\n{round}日目\n深さ {depth}\n共有資金 {balance}",
+                "セッション {session}\n状態 {state}\n{round}日目\n危険度 {depth}\n共有資金 {balance}",
                 "session", session.sessionId(),
                 "state", stateName(session),
                 "round", session.currentRound(),
-                "depth", session.getMaxDepth(),
+                "depth", plugin.settings().gui().describe(session.getMaxDepth()),
                 "balance", session.sharedBalance());
     }
 

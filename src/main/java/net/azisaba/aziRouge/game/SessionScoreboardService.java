@@ -202,7 +202,7 @@ public final class SessionScoreboardService {
                             : "scoreboard.next-actions.choose-depth",
                     session.currentRound() == 0
                             ? "装備を整えてダンジョンに入ろう！"
-                            : "深さを選んでダンジョンへ"
+                            : "危険度を選んでダンジョンへ"
             ));
         }
         if (session.isBossBattleActive()) {

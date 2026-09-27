@@ -1,6 +1,10 @@
 package net.azisaba.aziRouge.game;
 
+import net.azisaba.aziRouge.config.GuiSettings;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class DepartureGuardTest {
@@ -30,11 +34,19 @@ class DepartureGuardTest {
     }
 
     @Test
-    void dialogDepthRejectsMissingNonFiniteFractionalAndOutOfRangeInput() {
-        for (Float depth : new Float[]{null, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, 0F, -1F, 1.5F, 13F}) {
-            assertFalse(DepartureGuard.validDepth(depth, 12));
+    void dialogDepthAcceptsOnlyConfiguredDangerLevels() {
+        List<GuiSettings.DangerLevel> levels = List.of(new GuiSettings.DangerLevel("超安全！", 3), new GuiSettings.DangerLevel("超危険！", 12));
+        for (String option : new String[]{null, "", "1", "7", "3.0", "abc", "超安全！"}) {
+            assertTrue(DepartureGuard.selectedDepth(option, levels).isEmpty());
         }
-        assertTrue(DepartureGuard.validDepth(1F, 12));
-        assertTrue(DepartureGuard.validDepth(12F, 12));
+        assertEquals(3, DepartureGuard.selectedDepth("3", levels).getAsInt());
+        assertEquals(12, DepartureGuard.selectedDepth("12", levels).getAsInt());
+    }
+
+    @Test
+    void unknownDepthFallsBackToNumber() {
+        GuiSettings settings = new GuiSettings(List.of(new GuiSettings.DangerLevel("普通", 7)), 7);
+        assertEquals("普通", settings.describe(7));
+        assertEquals("5", settings.describe(5));
     }
 }

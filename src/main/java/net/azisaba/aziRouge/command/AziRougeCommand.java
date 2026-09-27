@@ -304,7 +304,7 @@ public final class AziRougeCommand implements TabExecutor {
         tell(sender, "commands.active-sessions", "&e稼働中のセッション:");
         for (GameSession session : sessions) {
             tell(sender, "commands.session-line",
-                    "&e{session} 状態={state} 進行={roundState} 資金={money} 人数={online}/{members}/{max} 経過={round}日目 生存={alive} 脱落={dead} 待機={pending} 深さ={maxDepth} ワールド={world} 作成者={owner}",
+                    "&e{session} 状態={state} 進行={roundState} 資金={money} 人数={online}/{members}/{max} 経過={round}日目 生存={alive} 脱落={dead} 待機={pending} 危険度={maxDepth} ワールド={world} 作成者={owner}",
                     "session", session.sessionId(),
                     "state", plugin.messages().text("scoreboard.states." + session.state().displayKey(), session.state().name()),
                     "roundState", session.roundState(),
@@ -316,7 +316,7 @@ public final class AziRougeCommand implements TabExecutor {
                     "alive", session.alivePlayers().size(),
                     "dead", session.deadPlayers().size(),
                     "pending", session.pendingPlayersNextRound().size(),
-                    "maxDepth", session.getMaxDepth(),
+                    "maxDepth", plugin.settings().gui().describe(session.getMaxDepth()),
                     "world", session.world().getName(),
                     "owner", session.owner());
         }
@@ -385,13 +385,13 @@ public final class AziRougeCommand implements TabExecutor {
 
         Integer maxDepth = parsePositiveInt(args.length == 1 ? args[0] : null, plugin.settings().gui().defaultDepth());
         if (maxDepth == null) {
-            tell(sender, "round.error.max-depth", "&c深さは1以上の整数にしてください。");
+            tell(sender, "round.error.max-depth", "&c危険度は1以上の整数にしてください。");
             return true;
         }
         try {
             DungeonGenerationResult result = plugin.gameSessionManager().startRound(session, maxDepth);
-            tell(sender, "journey.started", "&7ダンジョンの準備ができた。{round}日目 / 深さ {depth}",
-                    "round", session.currentRound(), "depth", maxDepth);
+            tell(sender, "journey.started", "&7ダンジョンの準備ができた。{round}日目 / 危険度 {depth}",
+                    "round", session.currentRound(), "depth", plugin.settings().gui().describe(maxDepth));
         } catch (TemplateLoadException | SchematicPlacementException ex) {
             tell(sender, "round.error.start-failed", "&c探索開始に失敗しました: {reason}", "reason", ex.getMessage());
             plugin.getLogger().warning("Round start failed: " + ex.getMessage());
@@ -641,12 +641,12 @@ public final class AziRougeCommand implements TabExecutor {
                     ),
                     plugin.settings()
             );
-            tell(sender, "commands.generated", "&aダンジョンを生成しました。seed={seed} ピース={pieces}/{target} 接続={connections} 深さ={depth}",
+            tell(sender, "commands.generated", "&aダンジョンを生成しました。seed={seed} ピース={pieces}/{target} 接続={connections} 危険度={depth}",
                     "seed", result.seed(),
                     "pieces", result.placedPieceCount(),
                     "target", result.targetPieceCount(),
                     "connections", result.connectionCount(),
-                    "depth", depthOverride == null ? defaults.maxDepth() : depthOverride);
+                    "depth", plugin.settings().gui().describe(depthOverride == null ? defaults.maxDepth() : depthOverride));
         } catch (TemplateLoadException | SchematicPlacementException ex) {
             tell(sender, "commands.generate-failed", "&c生成に失敗しました: {reason}", "reason", ex.getMessage());
             plugin.getLogger().warning("Generation failed: " + ex.getMessage());

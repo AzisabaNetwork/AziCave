@@ -82,7 +82,7 @@ public final class SettingsLoader {
                 loadRoundTimingSettings(config),
                 loadEconomySettings(plugin, config),
                 loadShopSettings(plugin, config),
-                loadGuiSettings(config),
+                loadGuiSettings(plugin, config),
                 loadPlayerSettings(config),
                 loadBossSettings(plugin, config),
                 new AziRougeSettings(
@@ -227,13 +227,31 @@ public final class SettingsLoader {
         );
     }
 
-    private static GuiSettings loadGuiSettings(FileConfiguration config) {
-        int maxDepth = Math.max(1, config.getInt("gui.depth.max", config.getInt("dungeon.default-max-depth", 8)));
-        int defaultDepth = clampInt(config.getInt("gui.depth.default", config.getInt("dungeon.default-max-depth", 8)), 1, maxDepth);
-        return new GuiSettings(
-                maxDepth,
-                defaultDepth
-        );
+    private static GuiSettings loadGuiSettings(JavaPlugin plugin, FileConfiguration config) {
+        Map<Integer, GuiSettings.DangerLevel> levels = new java.util.TreeMap<>();
+        List<?> rawLevels = config.getList("gui.depth.levels");
+        if (rawLevels != null) {
+            for (Object rawLevel : rawLevels) {
+                Map<?, ?> values = asMap(rawLevel);
+                String desc = values == null ? null : normalizeOptionalText(stringValue(values.get("desc")));
+                int depth = values == null ? -1 : intValue(values.get("depth"), -1);
+                if (desc == null || depth < 1 || levels.containsKey(depth)) {
+                    plugin.getLogger().warning("Ignoring invalid gui.depth.levels entry: " + rawLevel);
+                    continue;
+                }
+                levels.put(depth, new GuiSettings.DangerLevel(desc, depth));
+            }
+        }
+        if (levels.isEmpty()) {
+            levels.put(3, new GuiSettings.DangerLevel("超安全！", 3));
+            levels.put(7, new GuiSettings.DangerLevel("普通", 7));
+            levels.put(12, new GuiSettings.DangerLevel("超危険！", 12));
+        }
+        int defaultDepth = config.getInt("gui.depth.default", -1);
+        if (!levels.containsKey(defaultDepth)) {
+            defaultDepth = levels.keySet().iterator().next();
+        }
+        return new GuiSettings(List.copyOf(levels.values()), defaultDepth);
     }
 
     private static PlayerSettings loadPlayerSettings(FileConfiguration config) {
