@@ -34,6 +34,13 @@ class DepartureGuardTest {
     }
 
     @Test
+    void lateJoinerAtTheEntranceKeepsTheirPosition() {
+        assertFalse(DepartureGuard.needsHomeTeleport(false, true));
+        assertTrue(DepartureGuard.needsHomeTeleport(true, true));
+        assertTrue(DepartureGuard.needsHomeTeleport(false, false));
+    }
+
+    @Test
     void dialogDepthAcceptsOnlyConfiguredDangerLevels() {
         List<GuiSettings.DangerLevel> levels = List.of(new GuiSettings.DangerLevel("超安全！", 3), new GuiSettings.DangerLevel("超危険！", 12));
         for (String option : new String[]{null, "", "1", "7", "3.0", "abc", "超安全！"}) {

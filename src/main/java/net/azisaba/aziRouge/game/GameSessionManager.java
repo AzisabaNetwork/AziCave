@@ -844,9 +844,10 @@ public final class GameSessionManager {
         updateRoundAfterAliveChange(session);
     }
 
-    public void handleSpectatorCompass(Player player) {
+    public void switchSpectatorTarget(Player player) {
         GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
-        if (session == null || session.state() != SessionState.IN_ROUND || !session.isRoundInactivePlayer(player.getUniqueId())) {
+        if (session == null || session.state() != SessionState.IN_ROUND || player.getGameMode() != GameMode.SPECTATOR
+                || !session.isRoundInactivePlayer(player.getUniqueId())) {
             return;
         }
         Player target = selectSpectatorTarget(session, player, true);
@@ -1083,21 +1084,19 @@ public final class GameSessionManager {
     private void makeRoundSpectatorAtHome(GameSession session, Player player) {
         initializeSessionPlayerState(player);
         setSpectator(player);
-        SpectatorItemSupport.give(plugin, player);
         Player target = selectSpectatorTarget(session, player, false);
         if (target == null) {
             player.teleport(session.spawnLocation());
             sendMessage(player, m("session.spectating-home-no-target", "&eYou are spectating at home. No alive players are available."));
         } else {
             player.setSpectatorTarget(target);
-            sendMessage(player, m("session.spectating-target", "&eYou are spectating {player}. Use the compass to switch targets.", "player", target.getName()));
+            sendMessage(player, m("session.spectating-target", "&eYou are spectating {player}. Sneak to switch targets.", "player", target.getName()));
         }
     }
 
     private void makeBossSpectatorAtDeathLocation(GameSession session, Player player) {
         initializeSessionPlayerState(player);
         setSpectator(player);
-        SpectatorItemSupport.give(plugin, player);
         Location deathLocation = session.bossDeathLocation(player.getUniqueId());
         if (deathLocation != null) {
             player.teleport(deathLocation);
@@ -1105,7 +1104,7 @@ public final class GameSessionManager {
         Player target = selectSpectatorTarget(session, player, false);
         if (target != null) {
             player.setSpectatorTarget(target);
-            sendMessage(player, m("session.boss-spectating-target", "&eYou are spectating {player}. An ally can revive you at your death location.", "player", target.getName()));
+            sendMessage(player, m("session.boss-spectating-target", "&eYou are spectating {player}. Sneak to switch targets. An ally can revive you at your death location.", "player", target.getName()));
         } else {
             sendMessage(player, m("session.boss-spectating-death-location", "&eYou are spectating at your death location."));
         }
@@ -1128,9 +1127,11 @@ public final class GameSessionManager {
             restoredPlayers.add(playerId);
             Player player = Bukkit.getPlayer(playerId);
             if (player != null) {
+                boolean returnHome = DepartureGuard.needsHomeTeleport(
+                        player.getGameMode() == GameMode.SPECTATOR, isInHomeArea(session, player.getLocation()));
                 setRoundSurvival(player);
                 initializeSessionPlayerState(player);
-                player.teleport(session.spawnLocation());
+                if (returnHome) player.teleport(session.spawnLocation());
                 sendTitle(player, m("session.title.returned", "&a復帰"), m("session.subtitle.can-play-round", "&e今日から動ける"), 10, 50, 12);
                 player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.45F, 1.4F);
             }
@@ -1141,9 +1142,11 @@ public final class GameSessionManager {
             }
             Player player = Bukkit.getPlayer(playerId);
             if (player != null) {
+                boolean returnHome = DepartureGuard.needsHomeTeleport(
+                        player.getGameMode() == GameMode.SPECTATOR, isInHomeArea(session, player.getLocation()));
                 setRoundSurvival(player);
                 initializeSessionPlayerState(player);
-                player.teleport(session.spawnLocation());
+                if (returnHome) player.teleport(session.spawnLocation());
                 sendTitle(player, m("session.title.returned", "&a復帰"), m("session.subtitle.can-play-round", "&e今日から動ける"), 10, 50, 12);
                 player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.45F, 1.4F);
             }

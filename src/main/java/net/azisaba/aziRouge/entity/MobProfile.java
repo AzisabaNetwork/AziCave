@@ -95,6 +95,11 @@ public enum MobProfile {
             applyAttribute(mob, Attribute.SCALE, 0.6);
         }
 
+        if (mob.getType() == EntityType.CREAKING) {
+            applyAttribute(mob, Attribute.SCALE, 0.7D);
+            mob.setInvulnerable(true);
+        }
+
         if (mob instanceof Creeper creeper) {
             creeper.setPowered(true);
             creeper.addPotionEffect(new PotionEffect(PotionEffectType.INVISIBILITY, Integer.MAX_VALUE, 0, false, false, true));

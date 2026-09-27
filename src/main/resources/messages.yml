@@ -193,7 +193,7 @@ items:
   open-menu: "&6メニュー"
   open-menu-lore: "&7右クリックでメニューを開きます"
   switch-spectator-target: "&b観戦対象の切り替え"
-  switch-spectator-target-lore: "&7右クリックで次の生存者へ視点を切り替えます"
+  switch-spectator-target-lore: "&7スニークで次の生存者へ視点を切り替えます"
 
 treasure:
   hotbar-full: "&cホットバーがいっぱいです。空きを作ってから拾ってください。"
@@ -237,8 +237,8 @@ session:
   no-spectator-target: "&e観戦可能な生存者がいません。"
   now-spectating: "&e{player} を観戦しています。"
   spectating-home-no-target: "&eホームで観戦中（観戦可能な生存者がいません）。"
-  spectating-target: "&e{player} を観戦しています。コンパスで対象を切り替えられます。"
-  boss-spectating-target: "&e{player} を観戦しています。味方が死亡地点で蘇生可能です。"
+  spectating-target: "&e{player} を観戦しています。スニークで対象を切り替えられます。"
+  boss-spectating-target: "&e{player} を観戦しています。スニークで対象を切り替えられます。味方が死亡地点で蘇生可能です。"
   boss-spectating-death-location: "&e死亡地点を観戦しています。"
   game-over-returned-home: "&eゲームオーバーになったためホームに戻りました。次のセッションを作成する前に退出してください。"
   creating: "&eセッションを作成中…"

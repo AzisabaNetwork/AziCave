@@ -1,5 +1,6 @@
 package net.azisaba.aziRouge.game;
 
+import com.destroystokyo.paper.event.player.PlayerStopSpectatingEntityEvent;
 import org.bukkit.World;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -70,6 +71,16 @@ public final class SessionPlayerListener implements Listener {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         sessionManager.handlePlayerQuit(event.getPlayer());
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onStopSpectating(PlayerStopSpectatingEntityEvent event) {
+        org.bukkit.entity.Player player = event.getPlayer();
+        org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
+            if (player.isOnline()) {
+                sessionManager.switchSpectatorTarget(player);
+            }
+        });
     }
 
     @EventHandler

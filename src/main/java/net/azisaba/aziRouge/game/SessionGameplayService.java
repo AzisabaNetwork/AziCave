@@ -8,6 +8,7 @@ import org.bukkit.Material;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Chest;
+import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -119,7 +120,11 @@ public final class SessionGameplayService implements Listener {
     public void onEntityExplode(EntityExplodeEvent event) {
         GameSession session = sessionManager.sessionForWorld(event.getLocation().getWorld()).orElse(null);
         if (session != null) {
-            event.blockList().removeIf(block -> plugin.economyService().isDeliveryChest(session, block));
+            if (event.getEntity() instanceof Creeper) {
+                event.blockList().clear();
+            } else {
+                event.blockList().removeIf(block -> plugin.economyService().isDeliveryChest(session, block));
+            }
         }
     }
 

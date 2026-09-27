@@ -1,10 +1,13 @@
 package net.azisaba.aziRouge.game;
 
 import net.azisaba.aziRouge.AziRouge;
+import net.azisaba.aziRouge.dungeon.DisplayGimmickKeys;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Particle;
+import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Villager;
 import org.bukkit.inventory.ItemStack;
@@ -67,7 +70,26 @@ public final class SessionScoreboardService {
             show(player, session);
         }
         displayedPlayers.removeIf(playerId -> !onlinePlayers.contains(playerId));
-        sessionManager.sessions().forEach(this::showAngerParticles);
+        sessionManager.sessions().forEach(session -> {
+            showAngerParticles(session);
+            showTrapParticles(session);
+        });
+    }
+
+    private void showTrapParticles(GameSession session) {
+        for (BlockDisplay trap : session.world().getEntitiesByClass(BlockDisplay.class)) {
+            if (!trap.getScoreboardTags().contains(DisplayGimmickKeys.TRAP_DISPLAY_TAG)) {
+                continue;
+            }
+            Location location = trap.getLocation().add(0.5D, 0.35D, 0.5D);
+            for (Player player : session.world().getPlayers()) {
+                if (player.getLocation().distanceSquared(location) <= 144.0D) {
+                    player.spawnParticle(Particle.DUST, location, 6, 0.22D, 0.12D, 0.22D,
+                            new Particle.DustOptions(Color.RED, 1.4F));
+                    player.spawnParticle(Particle.FLAME, location, 3, 0.18D, 0.1D, 0.18D, 0.0D);
+                }
+            }
+        }
     }
 
     private void showAngerParticles(GameSession session) {
@@ -103,7 +125,7 @@ public final class SessionScoreboardService {
         );
         objective.setDisplaySlot(DisplaySlot.SIDEBAR);
 
-        registerHiddenNameTagTeam(scoreboard, session);
+        registerHiddenNameTagTeam(scoreboard);
 
         int quotaRound = DepartureGuard.dayToStart(session.currentRound());
         long quota = plugin.economyService().quotaForRound(quotaRound);
@@ -137,14 +159,11 @@ public final class SessionScoreboardService {
         displayedPlayers.add(player.getUniqueId());
     }
 
-    private void registerHiddenNameTagTeam(Scoreboard scoreboard, GameSession session) {
+    private void registerHiddenNameTagTeam(Scoreboard scoreboard) {
         Team team = scoreboard.registerNewTeam("azirouge_hidden");
         team.setOption(Team.Option.NAME_TAG_VISIBILITY, Team.OptionStatus.NEVER);
-        for (UUID playerId : session.onlineMembers()) {
-            Player member = Bukkit.getPlayer(playerId);
-            if (member != null) {
-                team.addEntry(member.getName());
-            }
+        for (Player member : Bukkit.getOnlinePlayers()) {
+            team.addEntry(member.getName());
         }
     }
 

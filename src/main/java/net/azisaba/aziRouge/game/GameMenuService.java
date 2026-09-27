@@ -107,7 +107,7 @@ public final class GameMenuService implements Listener {
         ItemStack item = event.getItem();
         if (SpectatorItemSupport.isSwitchTargetItem(plugin, item)) {
             event.setCancelled(true);
-            plugin.gameSessionManager().handleSpectatorCompass(event.getPlayer());
+            plugin.gameSessionManager().switchSpectatorTarget(event.getPlayer());
         } else if (GameOverItemSupport.isLeaveItem(plugin, item)) {
             event.setCancelled(true);
             showLeaveSessionConfirmation(event.getPlayer());
