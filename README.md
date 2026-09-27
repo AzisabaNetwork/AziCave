@@ -252,23 +252,30 @@ Mob は `azirouge.mobs` の重みとスポーン間隔でダンジョン内に�
 - shop は `IN_ROUND` と `LOBBY` で利用できます。
 - `IN_ROUND` では alive かつ非 spectator の session member のみ購入できます。
 - `LOBBY` では session member が利用できます。
-- 取引内容は `shop.trades.in-round` と `shop.trades.between-round` に分けて設定します。
+- 取引内容は `shop.trades` に設定し、探索中とロビーで同じ商品を販売します。旧形式の2つのリストも読み込めます（同じ `id` は探索中の設定を優先）。
 
 ```yaml
 shop:
   title: AziRouge Shop
   trades:
-    in-round:
-      - id: bread
-        material: BREAD
-        amount: 4
-        price: 12
-    between-round:
-      - id: bread
-        material: BREAD
-        amount: 4
-        price: 24
+    - id: bread
+      material: BREAD
+      amount: 4
+      price: 12
+    - id: healing_potion
+      material: POTION
+      potion-type: HEALING
+      potion-level: 2
+      amount: 1
+      price: 100
+    - id: enchanted_book
+      material: ENCHANTED_BOOK
+      stored-enchantments:
+        sharpness: 3
+      price: 150
 ```
+
+`potion-type` は Bukkit の `PotionType` 名です。`potion-level` は省略時 1、強化可能な種類のみ 2 を指定できます。ポーションには `SPLASH_POTION`、`LINGERING_POTION`、`TIPPED_ARROW` も使えます。商品には必要に応じて `display-name`、`lore`（文字列リスト）、`enchantments`（名前とレベルのマップ）、`stored-enchantments`（エンチャント本）、`durability`（残り耐久値）、`unbreakable`、`can-destroy`（ブロック名のリスト）を追加できます。名前と説明文は `&` カラーコードに対応します。
 
 ## MariaDB player statistics / leaderboard
 

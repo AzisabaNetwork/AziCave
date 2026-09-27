@@ -5,9 +5,13 @@ import net.azisaba.aziRouge.config.ShopTradeSettings;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
 import org.bukkit.Sound;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Villager;
 import org.bukkit.event.EventHandler;
@@ -19,10 +23,13 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.Damageable;
+import org.bukkit.inventory.meta.EnchantmentStorageMeta;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.PotionMeta;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public final class ShopService implements Listener {
     private final AziRouge plugin;
@@ -128,7 +135,7 @@ public final class ShopService implements Listener {
             return;
         }
 
-        List<ShopTradeSettings> trades = tradesFor(session);
+        List<ShopTradeSettings> trades = plugin.settings().shop().trades();
         if (trades.isEmpty()) {
             player.sendMessage(plugin.messages().prefix() + m("shop.no-trades", "&cいま買える品はない。"));
             return;
@@ -159,12 +166,13 @@ public final class ShopService implements Listener {
         ItemStack item = tradeItem(trade);
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            meta.displayName(Component.translatable(trade.material().translationKey())
-                    .color(NamedTextColor.GREEN)
-                    .decoration(TextDecoration.ITALIC, false)
+            Component name = meta.displayName() == null
+                    ? Component.translatable(item.translationKey()).color(NamedTextColor.GREEN)
+                    : meta.displayName();
+            meta.displayName(name.decoration(TextDecoration.ITALIC, false)
                     .append(plain(" ×" + trade.amount(), NamedTextColor.WHITE))
                     .append(plain("  " + trade.price(), NamedTextColor.GOLD)));
-            List<Component> lore = new ArrayList<>();
+            List<Component> lore = new ArrayList<>(meta.lore() == null ? List.of() : meta.lore());
             lore.add(loreLine("shop.lore.price", "&e価格 {price}", "price", trade.price()));
             lore.add(loreLine("shop.lore.shared-money", "&7共有資金 {balance}", "balance", session.sharedBalance()));
             lore.add(loreLine("shop.lore.after-purchase", "&7購入後 {balance}", "balance", Math.max(0L, session.sharedBalance() - trade.price())));
@@ -196,23 +204,45 @@ public final class ShopService implements Listener {
 
     private ItemStack tradeItem(ShopTradeSettings trade) {
         ItemStack item = new ItemStack(trade.material(), trade.amount());
+        ItemMeta meta = item.getItemMeta();
+        if (meta instanceof PotionMeta potion && trade.potionType() != null) {
+            potion.setBasePotionType(trade.potionType());
+        }
+        if (meta != null) {
+            for (Map.Entry<String, Integer> entry : trade.enchantments().entrySet()) {
+                NamespacedKey key = NamespacedKey.fromString(entry.getKey());
+                Enchantment enchantment = key == null ? null : Registry.ENCHANTMENT.get(key);
+                if (enchantment != null) {
+                    meta.addEnchant(enchantment, entry.getValue(), true);
+                }
+            }
+            if (meta instanceof EnchantmentStorageMeta book) {
+                for (Map.Entry<String, Integer> entry : trade.storedEnchantments().entrySet()) {
+                    NamespacedKey key = NamespacedKey.fromString(entry.getKey());
+                    Enchantment enchantment = key == null ? null : Registry.ENCHANTMENT.get(key);
+                    if (enchantment != null) {
+                        book.addStoredEnchant(enchantment, entry.getValue(), true);
+                    }
+                }
+            }
+            if (trade.displayName() != null) {
+                meta.displayName(LegacyComponentSerializer.legacyAmpersand().deserialize(trade.displayName())
+                        .decoration(TextDecoration.ITALIC, false));
+            }
+            if (!trade.lore().isEmpty()) {
+                meta.lore(trade.lore().stream()
+                        .map(line -> LegacyComponentSerializer.legacyAmpersand().deserialize(line)
+                                .decoration(TextDecoration.ITALIC, false))
+                        .toList());
+            }
+            meta.setUnbreakable(trade.unbreakable());
+            if (meta instanceof Damageable damageable && trade.durability() != null) {
+                damageable.setDamage(Math.max(0, item.getType().getMaxDurability() - trade.durability()));
+            }
+            item.setItemMeta(meta);
+        }
         ItemAdventurePredicateSupport.setCanBreak(item, trade.canDestroy());
-        if (item.getItemMeta() instanceof Damageable damageable && trade.durability() != null) {
-            int damage = Math.max(0, item.getType().getMaxDurability() - trade.durability());
-            damageable.setDamage(damage);
-            item.setItemMeta(damageable);
-        }
         return item;
-    }
-
-    private List<ShopTradeSettings> tradesFor(GameSession session) {
-        if (session.state() == SessionState.IN_ROUND) {
-            return plugin.settings().shop().inRoundTrades();
-        }
-        if (session.state() == SessionState.LOBBY) {
-            return plugin.settings().shop().betweenRoundTrades();
-        }
-        return List.of();
     }
 
     private boolean requiresConfirmation(GameSession session, ShopTradeSettings trade) {

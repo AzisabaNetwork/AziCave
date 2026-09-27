@@ -8,6 +8,7 @@ import org.bukkit.Material;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.potion.PotionType;
 
 import java.nio.file.Path;
 import java.time.DateTimeException;
@@ -206,10 +207,23 @@ public final class SettingsLoader {
     }
 
     private static ShopSettings loadShopSettings(JavaPlugin plugin, FileConfiguration config) {
+        List<?> rawTrades = config.getList("shop.trades");
+        if (rawTrades != null) {
+            return new ShopSettings(
+                    requireText(config.getString("shop.title"), "商人"),
+                    loadShopTrades(plugin, rawTrades, "shop.trades")
+            );
+        }
+        Map<String, ShopTradeSettings> legacyTrades = new LinkedHashMap<>();
+        for (ShopTradeSettings trade : loadShopTrades(plugin, config.getList("shop.trades.in-round"), "shop.trades.in-round")) {
+            legacyTrades.putIfAbsent(trade.id(), trade);
+        }
+        for (ShopTradeSettings trade : loadShopTrades(plugin, config.getList("shop.trades.between-round"), "shop.trades.between-round")) {
+            legacyTrades.putIfAbsent(trade.id(), trade);
+        }
         return new ShopSettings(
                 requireText(config.getString("shop.title"), "商人"),
-                loadShopTrades(plugin, config.getList("shop.trades.in-round"), "shop.trades.in-round"),
-                loadShopTrades(plugin, config.getList("shop.trades.between-round"), "shop.trades.between-round")
+                List.copyOf(legacyTrades.values())
         );
     }
 
@@ -299,16 +313,48 @@ public final class SettingsLoader {
             }
 
             int amount = clampInt(intValue(values.get("amount"), 1), 1, material.getMaxStackSize());
+            String potionName = normalizeOptionalText(stringValue(values.get("potion-type")));
+            PotionType potionType = potionName == null ? null : resolveShopPotionType(
+                    potionName, intValue(values.get("potion-level"), values.containsKey("potion-level") ? -1 : 1));
+            if (potionName != null && (potionType == null || material != Material.POTION
+                    && material != Material.SPLASH_POTION && material != Material.LINGERING_POTION
+                    && material != Material.TIPPED_ARROW)) {
+                plugin.getLogger().warning("Ignoring invalid shop potion in " + path + ": " + values);
+                continue;
+            }
+            if (potionName == null && values.containsKey("potion-level")) {
+                plugin.getLogger().warning("Ignoring shop trade with potion-level but no potion-type in " + path + ": " + values);
+                continue;
+            }
+            List<String> lore = values.get("lore") instanceof List<?> lines
+                    ? lines.stream().map(String::valueOf).toList() : List.of();
             trades.add(new ShopTradeSettings(
                     id.toLowerCase(Locale.ROOT),
                     material,
                     amount,
                     price,
                     loadMaterialSet(values.get("can-destroy")),
-                    optionalPositiveInt(values.get("durability"))
+                    optionalPositiveInt(values.get("durability")),
+                    potionType,
+                    loadStoredEnchantments(values.get("enchantments")),
+                    loadStoredEnchantments(values.get("stored-enchantments")),
+                    stringValue(values.get("display-name")),
+                    lore,
+                    booleanValue(values.get("unbreakable"), false)
             ));
         }
         return List.copyOf(trades);
+    }
+
+    private static PotionType resolveShopPotionType(String name, int level) {
+        if (level < 1 || level > 2) {
+            return null;
+        }
+        try {
+            return PotionType.valueOf((level == 2 ? "STRONG_" : "") + name.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
     }
 
     private static MiningSettings loadMiningSettings(JavaPlugin plugin, FileConfiguration config) {

@@ -4,7 +4,6 @@ import java.util.List;
 
 public record ShopSettings(
         String title,
-        List<ShopTradeSettings> inRoundTrades,
-        List<ShopTradeSettings> betweenRoundTrades
+        List<ShopTradeSettings> trades
 ) {
 }

@@ -152,7 +152,7 @@ economy:
   quota:
     base: 50
     per-round: 25
-    multiplier: 1.1
+    multiplier: 1.5
     # N: the game ends after this many consecutive quota misses.
     max-consecutive-misses: 3
     warning-remaining: 1
@@ -180,128 +180,85 @@ economy:
 shop:
   title: Shop
   trades:
-    in-round:
-      - id: golden_axe
-        material: GOLDEN_AXE
-        amount: 1
-        price: 50
-      - id: torch
-        material: TORCH
-        amount: 8
-        price: 20
-      - id: mining_pickaxe
-        material: IRON_PICKAXE
-        amount: 1
-        price: 60
-        durability: 32
-        can-destroy:
-          - COAL_ORE
-          - IRON_ORE
-          - GOLD_ORE
-          - DIAMOND_ORE
-          - EMERALD_ORE
-          - CHISELED_DEEPSLATE
-      - id: 革防具（頭）
-        material: LEATHER_HELMET
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 革防具（胸）
-        material: LEATHER_CHESTPLATE
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 革防具（ズボン）
-        material: LEATHER_LEGGINGS
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 革防具（足）
-        material: LEATHER_BOOTS
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 金防具（頭）
-        material: GOLDEN_HELMET
-        amount: 1
-        price: 160
-        durability: 32
-      - id: 金防具（胸）
-        material: GOLDEN_CHESTPLATE
-        amount: 1
-        price: 160
-        durability: 32
-      - id: 金防具（ズボン）
-        material: GOLDEN_LEGGINGS
-        amount: 1
-        price: 160
-        durability: 32
-      - id: 金防具（足）
-        material: GOLDEN_BOOTS
-        amount: 1
-        price: 160
-        durability: 32
-    between-round:
-      - id: golden_axe
-        material: GOLDEN_AXE
-        amount: 1
-        price: 50
-      - id: torch
-        material: TORCH
-        amount: 8
-        price: 20
-      - id: mining_pickaxe
-        material: IRON_PICKAXE
-        amount: 1
-        price: 60
-        durability: 32
-        can-destroy:
-          - COAL_ORE
-          - IRON_ORE
-          - GOLD_ORE
-          - DIAMOND_ORE
-          - EMERALD_ORE
-          - CHISELED_DEEPSLATE
-      - id: 革防具（頭）
-        material: LEATHER_HELMET
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 革防具（胸）
-        material: LEATHER_CHESTPLATE
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 革防具（ズボン）
-        material: LEATHER_LEGGINGS
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 革防具（足）
-        material: LEATHER_BOOTS
-        amount: 1
-        price: 80
-        durability: 32
-      - id: 金防具（頭）
-        material: GOLDEN_HELMET
-        amount: 1
-        price: 160
-        durability: 32
-      - id: 金防具（胸）
-        material: GOLDEN_CHESTPLATE
-        amount: 1
-        price: 160
-        durability: 32
-      - id: 金防具（ズボン）
-        material: GOLDEN_LEGGINGS
-        amount: 1
-        price: 160
-        durability: 32
-      - id: 金防具（足）
-        material: GOLDEN_BOOTS
-        amount: 1
-        price: 160
-        durability: 32
+    - id: 金のオノ
+      material: GOLDEN_AXE
+      amount: 1
+      price: 50
+    - id: 松明
+      material: TORCH
+      amount: 8
+      price: 20
+    - id: 壊れそうなつるはし
+      material: IRON_PICKAXE
+      amount: 1
+      price: 60
+      durability: 32
+      can-destroy:
+        - COAL_ORE
+        - IRON_ORE
+        - GOLD_ORE
+        - DIAMOND_ORE
+        - EMERALD_ORE
+        - CHISELED_DEEPSLATE
+    - id: 壊れそうなつるはし（耐久力アップ）
+      material: IRON_PICKAXE
+      amount: 1
+      price: 120
+      durability: 64
+      can-destroy:
+        - COAL_ORE
+        - IRON_ORE
+        - GOLD_ORE
+        - DIAMOND_ORE
+        - EMERALD_ORE
+        - CHISELED_DEEPSLATE
+    - id: 治癒のポーション
+      material: POTION
+      amount: 1
+      price: 100
+      potion-type: HEALING
+      potion-level: 1
+      display-name: 治癒のポーション
+    - id: 革防具（頭）
+      material: LEATHER_HELMET
+      amount: 1
+      price: 80
+      durability: 32
+    - id: 革防具（胸）
+      material: LEATHER_CHESTPLATE
+      amount: 1
+      price: 80
+      durability: 32
+    - id: 革防具（ズボン）
+      material: LEATHER_LEGGINGS
+      amount: 1
+      price: 80
+      durability: 32
+    - id: 革防具（足）
+      material: LEATHER_BOOTS
+      amount: 1
+      price: 80
+      durability: 32
+    - id: 金防具（頭）
+      material: GOLDEN_HELMET
+      amount: 1
+      price: 160
+      durability: 32
+    - id: 金防具（胸）
+      material: GOLDEN_CHESTPLATE
+      amount: 1
+      price: 160
+      durability: 32
+    - id: 金防具（ズボン）
+      material: GOLDEN_LEGGINGS
+      amount: 1
+      price: 160
+      durability: 32
+    - id: 金防具（足）
+      material: GOLDEN_BOOTS
+      amount: 1
+      price: 160
+      durability: 32
 gui:
   depth:
     max: 12
@@ -470,11 +427,11 @@ azirouge:
             min-amount: 1
             max-amount: 2
           - material: POTION
-            weight: 6
+            weight: 10
             potion-type: HEALING
       tier-3:
         min-rolls: 1
-        max-rolls: 3
+        max-rolls: 2
         entries:
           - material: COAL
             weight: 12
@@ -515,11 +472,11 @@ azirouge:
           - material: EMERALD
             weight: 10
             min-amount: 1
-            max-amount: 2
+            max-amount: 1
           - material: DIAMOND
             weight: 10
             min-amount: 1
-            max-amount: 2
+            max-amount: 1
           - material: NETHERITE_SCRAP
             weight: 4
           - material: QUARTZ
@@ -527,7 +484,7 @@ azirouge:
             min-amount: 1
             max-amount: 2
           - material: POTION
-            weight: 6
+            weight: 10
             potion-type: HEALING
   traps:
     base-spawn-chance: 0.06
