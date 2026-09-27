@@ -183,15 +183,15 @@ shop:
     - id: 金のオノ
       material: GOLDEN_AXE
       amount: 1
-      price: 50
+      price: 40
     - id: 松明
       material: TORCH
       amount: 8
-      price: 20
+      price: 10
     - id: 壊れそうなつるはし
       material: IRON_PICKAXE
       amount: 1
-      price: 60
+      price: 40
       durability: 32
       can-destroy:
         - COAL_ORE
@@ -203,7 +203,7 @@ shop:
     - id: 壊れそうなつるはし（耐久力アップ）
       material: IRON_PICKAXE
       amount: 1
-      price: 120
+      price: 80
       durability: 64
       can-destroy:
         - COAL_ORE
@@ -309,11 +309,11 @@ azirouge:
   mob-spawn-power-scaling:
     enabled: true
     depth:
-      multiplier-per-level: 0.1
-      max-multiplier: 2.0
+      multiplier-per-level: 0.5
+      max-multiplier: 3.0
     players:
       multiplier-per-additional-player: 0.5
-      max-multiplier: 2.5
+      max-multiplier: 3.0
   mob-spawn-light:
     enabled: true
     sample-attempts-per-spawn: 96
@@ -341,9 +341,9 @@ azirouge:
         radius: 8
         multiplier: 0.20
   treasure:
-    base-spawn-chance: 0.2
+    base-spawn-chance: 0.1
     depth-multiplier: 0.05
-    max-spawn-chance: 0.85
+    max-spawn-chance: 0.65
     min-per-dungeon: 1
     tiers:
       tier-1:
@@ -517,7 +517,7 @@ azirouge:
         min-depth: 4
   mining:
     enabled: true
-    ores-per-piece: 2
+    ores-per-piece: 1
     triggers-per-dungeon: 4
     backing-material: STONE
     trigger-material: CHISELED_DEEPSLATE
