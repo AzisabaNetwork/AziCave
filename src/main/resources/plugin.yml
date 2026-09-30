@@ -1,55 +1,55 @@
-name: AziRouge
+name: AziCave
 version: '${version}'
-main: net.azisaba.aziRouge.AziRouge
+main: net.azisaba.aziCave.AziCave
 description: Roguelike dungeon generator with external schematic templates.
 api-version: '1.21'
 softdepend:
   - WorldEdit
 commands:
-  azirouge:
-    description: Manage AziRouge dungeon generation and game sessions.
-    usage: /azirouge <start|end|session|round|money|stats|generate|reload|debug|author>
-    permission: azirouge.command
+  azicave:
+    description: Manage AziCave dungeon generation and game sessions.
+    usage: /azicave <start|end|session|round|money|stats|generate|reload|debug|author>
+    permission: azicave.command
 permissions:
-  azirouge.command:
-    description: Allows using the AziRouge command.
+  azicave.command:
+    description: Allows using the AziCave command.
     default: true
-  azirouge.start:
-    description: Allows creating an AziRouge session with the legacy start command.
+  azicave.start:
+    description: Allows creating an AziCave session with the legacy start command.
     default: op
-  azirouge.end:
-    description: Allows ending AziRouge sessions.
+  azicave.end:
+    description: Allows ending AziCave sessions.
     default: op
-  azirouge.session:
-    description: Allows creating, joining and leaving AziRouge sessions.
+  azicave.session:
+    description: Allows creating, joining and leaving AziCave sessions.
     default: true
-  azirouge.session.forceend:
-    description: Allows force-ending any AziRouge session.
+  azicave.session.forceend:
+    description: Allows force-ending any AziCave session.
     default: op
-  azirouge.session.list:
-    description: Allows listing all active AziRouge sessions.
+  azicave.session.list:
+    description: Allows listing all active AziCave sessions.
     default: op
-  azirouge.money:
-    description: Allows viewing and editing AziRouge session money.
+  azicave.money:
+    description: Allows viewing and editing AziCave session money.
     default: op
-  azirouge.stats:
-    description: Allows viewing your AziRouge player statistics.
+  azicave.stats:
+    description: Allows viewing your AziCave player statistics.
     default: true
-  azirouge.stats.others:
-    description: Allows viewing another player's AziRouge statistics.
+  azicave.stats.others:
+    description: Allows viewing another player's AziCave statistics.
     default: op
-  azirouge.command.reload:
-    description: Allows reloading AziRouge configuration.
+  azicave.command.reload:
+    description: Allows reloading AziCave configuration.
     default: op
-  azirouge.command.debug:
-    description: Allows toggling AziRouge debug logging.
+  azicave.command.debug:
+    description: Allows toggling AziCave debug logging.
     default: op
-  azirouge.command.generate:
+  azicave.command.generate:
     description: Allows generating dungeons.
     default: op
-  azirouge.command.author:
+  azicave.command.author:
     description: Allows editing templates in-game.
     default: op
-  azirouge.beta.join:
-    description: Allows joining an AziRouge beta session.
+  azicave.beta.join:
+    description: Allows joining an AziCave beta session.
     default: op

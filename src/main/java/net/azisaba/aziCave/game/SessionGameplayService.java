@@ -1,0 +1,404 @@
+package net.azisaba.aziCave.game;
+
+import net.azisaba.aziCave.AziCave;
+import net.kyori.adventure.text.Component;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.Material;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
+import org.bukkit.block.Chest;
+import org.bukkit.entity.Creeper;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockDropItemEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntityRegainHealthEvent;
+import org.bukkit.event.entity.FoodLevelChangeEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.Sound;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryOpenEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerToggleSprintEvent;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.scheduler.BukkitTask;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+
+public final class SessionGameplayService implements Listener {
+    private static final String BLOCKER_KEY = "inventory_blocker";
+    private static final int FOOD_MAX = 20;
+    private static final int SPRINT_MIN_FOOD = 6;
+
+    private final AziCave plugin;
+    private final GameSessionManager sessionManager;
+    private final Map<UUID, Double> foodLevels = new HashMap<>();
+    private final Map<UUID, Long> deliveryValuesOnOpen = new HashMap<>();
+    private BukkitTask task;
+
+    public SessionGameplayService(AziCave plugin, GameSessionManager sessionManager) {
+        this.plugin = plugin;
+        this.sessionManager = sessionManager;
+    }
+
+    public void start() {
+        if (task != null) {
+            return;
+        }
+        task = Bukkit.getScheduler().runTaskTimer(plugin, this::tickPlayers, 1L, 5L);
+    }
+
+    public void shutdown() {
+        if (task != null) {
+            task.cancel();
+            task = null;
+        }
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            removeBlockers(player.getInventory());
+        }
+        foodLevels.clear();
+        deliveryValuesOnOpen.clear();
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onBlockBreak(BlockBreakEvent event) {
+        GameSession session = sessionManager.sessionForPlayer(event.getPlayer().getUniqueId()).orElse(null);
+        if (!isSessionPlayer(event.getPlayer()) || session == null) {
+            return;
+        }
+        if (plugin.economyService().isDeliveryChest(session, event.getBlock())) {
+            event.setCancelled(true);
+            return;
+        }
+        if (!sessionManager.isActivePlaying(event.getPlayer())) {
+            event.setCancelled(true);
+            return;
+        }
+        ItemStack tool = event.getPlayer().getInventory().getItemInMainHand();
+        if (!ItemAdventurePredicateSupport.canBreak(tool, event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onBlockPlace(BlockPlaceEvent event) {
+        GameSession session = sessionManager.sessionForPlayer(event.getPlayer().getUniqueId()).orElse(null);
+        if (session != null && plugin.economyService().isDeliveryChest(session, event.getBlock())) {
+            event.setCancelled(true);
+            return;
+        }
+        if (isSessionPlayer(event.getPlayer()) && !sessionManager.isActivePlaying(event.getPlayer())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onBlockExplode(BlockExplodeEvent event) {
+        GameSession session = sessionManager.sessionForWorld(event.getBlock().getWorld()).orElse(null);
+        if (session != null) {
+            event.blockList().removeIf(block -> plugin.economyService().isDeliveryChest(session, block));
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onEntityExplode(EntityExplodeEvent event) {
+        GameSession session = sessionManager.sessionForWorld(event.getLocation().getWorld()).orElse(null);
+        if (session != null) {
+            if (event.getEntity() instanceof Creeper) {
+                event.blockList().clear();
+            } else {
+                event.blockList().removeIf(block -> plugin.economyService().isDeliveryChest(session, block));
+            }
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onPistonExtend(BlockPistonExtendEvent event) {
+        GameSession session = sessionManager.sessionForWorld(event.getBlock().getWorld()).orElse(null);
+        if (session != null && event.getBlocks().stream()
+                .anyMatch(block -> plugin.economyService().isDeliveryChest(session, block))) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onPistonRetract(BlockPistonRetractEvent event) {
+        GameSession session = sessionManager.sessionForWorld(event.getBlock().getWorld()).orElse(null);
+        if (session != null && event.getBlocks().stream()
+                .anyMatch(block -> plugin.economyService().isDeliveryChest(session, block))) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onFoodLevelChange(FoodLevelChangeEvent event) {
+        if (event.getEntity() instanceof Player) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onEntityDamage(EntityDamageEvent event) {
+        if (event.getEntity() instanceof Player player && isSessionPlayer(player) && !sessionManager.isActivePlaying(player)) {
+            event.setCancelled(true);
+            fixVitals(player);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onEntityRegainHealth(EntityRegainHealthEvent event) {
+        if (event.getEntity() instanceof Player player && isSessionPlayer(player) && !sessionManager.isActivePlaying(player)) {
+            event.setCancelled(true);
+            fixVitals(player);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player) || !sessionManager.isActivePlaying(player)) {
+            return;
+        }
+        ItemStack current = event.getCurrentItem();
+        if (isBlocker(current)) {
+            event.setCancelled(true);
+            return;
+        }
+        if (event.isShiftClick()) {
+            GameSession session = sessionManager.sessionForPlayer(player.getUniqueId()).orElse(null);
+            boolean depositing = session != null
+                    && event.getClickedInventory() instanceof PlayerInventory
+                    && event.getView().getTopInventory().getHolder() instanceof Chest chest
+                    && plugin.economyService().isDeliveryChest(session, chest.getBlock());
+            if (!depositing) {
+                event.setCancelled(true);
+            }
+            return;
+        }
+        if (event.getClickedInventory() instanceof PlayerInventory && event.getSlot() >= 9 && event.getSlot() <= 35) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onBlockDropItem(BlockDropItemEvent event) {
+        if (!sessionManager.isActivePlaying(event.getPlayer())) {
+            return;
+        }
+        event.getItems().forEach(drop -> drop.setItemStack(
+                plugin.economyService().withValueLore(drop.getItemStack())
+        ));
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onInventoryOpen(InventoryOpenEvent event) {
+        if (!(event.getPlayer() instanceof Player player) || !(event.getInventory().getHolder() instanceof Chest chest)) {
+            return;
+        }
+        GameSession session = sessionManager.sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session != null && plugin.economyService().isDeliveryChest(session, chest.getBlock())) {
+            plugin.journeyDisplayService().showDeliveryHint(player);
+            deliveryValuesOnOpen.put(player.getUniqueId(), plugin.economyService().deliveryValue(session));
+        }
+    }
+
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        Long before = deliveryValuesOnOpen.remove(event.getPlayer().getUniqueId());
+        GameSession session = sessionManager.sessionForPlayer(event.getPlayer().getUniqueId()).orElse(null);
+        if (before == null || session == null || session.state() == SessionState.GAME_OVER || session.state() == SessionState.CLOSING
+                || !(event.getPlayer() instanceof Player player)) {
+            return;
+        }
+        long after = plugin.economyService().deliveryValue(session);
+        if (after == before) {
+            return;
+        }
+        long quota = plugin.economyService().quotaForRound(DepartureGuard.dayToStart(session.currentRound()));
+        player.sendActionBar(plugin.messages().component(
+                "delivery-chest.progress", "&6納品 &f{delivered}&7 / &f{quota}  &7あと &f{missing}",
+                "delivered", after, "quota", quota, "missing", Math.max(0L, quota - after)));
+        player.playSound(player.getLocation(), Sound.BLOCK_CHEST_CLOSE, 0.6F, 1.1F);
+        if (before >= quota || after < quota || session.roundState() != RoundState.ACTIVE || session.isBossBattleActive()) {
+            return;
+        }
+        String title = plugin.messages().text("delivery-chest.title.quota-reached", "&aノルマ達成！");
+        String subtitle = plugin.messages().format("delivery-chest.subtitle.quota-reached", "&e{player} が納品した。ベッドで休めば1日が終わる",
+                "player", player.getName());
+        for (UUID memberId : session.onlineMembers()) {
+            Player member = Bukkit.getPlayer(memberId);
+            if (member != null) {
+                member.sendTitle(title, subtitle, 8, 50, 15);
+                member.playSound(member.getLocation(), Sound.ENTITY_VILLAGER_CELEBRATE, 0.8F, 1.0F);
+                member.playSound(member.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.5F, 1.3F);
+            }
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onInventoryDrag(InventoryDragEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player) || !sessionManager.isActivePlaying(player)) {
+            return;
+        }
+        int topSize = event.getView().getTopInventory().getSize();
+        for (int rawSlot : event.getRawSlots()) {
+            int playerSlot = rawSlot - topSize;
+            if (playerSlot >= 9 && playerSlot <= 35) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onPlayerDropItem(PlayerDropItemEvent event) {
+        if (isBlocker(event.getItemDrop().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        event.getDrops().removeIf(this::isBlocker);
+    }
+
+    private void tickPlayers() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (!isSessionPlayer(player)) {
+                foodLevels.remove(player.getUniqueId());
+                removeBlockers(player.getInventory());
+                continue;
+            }
+
+            if (sessionManager.isActivePlaying(player)) {
+                applyBlockers(player);
+                updateSprintFood(player);
+                updateReachedDepth(player);
+            } else {
+                sessionManager.ensureSpectatorTarget(player);
+                foodLevels.put(player.getUniqueId(), (double) FOOD_MAX);
+                removeBlockers(player.getInventory());
+                fixVitals(player);
+            }
+        }
+    }
+
+    private void updateReachedDepth(Player player) {
+        GameSession session = sessionManager.sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null || !player.getWorld().getUID().equals(session.world().getUID())) {
+            return;
+        }
+        java.util.OptionalInt containingDepth = session.resolveContainingDepth(player.getLocation());
+        if (containingDepth.isEmpty()) {
+            return;
+        }
+        int depth = containingDepth.getAsInt();
+        if (session.updateMaxReachedDepth(player.getUniqueId(), depth)) {
+            plugin.statisticsService().recordMaxDepth(session.runId(), player, depth);
+            if (depth > 0) {
+                player.sendActionBar(plugin.messages().component("journey.depth-record", "&b最深記録 &f深さ {depth}", "depth", depth));
+                player.playSound(player.getLocation(), Sound.BLOCK_AMETHYST_BLOCK_RESONATE, 0.6F, 0.8F + Math.min(depth, 10) * 0.08F);
+            }
+        }
+    }
+
+    private void updateSprintFood(Player player) {
+        double food = foodLevels.getOrDefault(player.getUniqueId(), (double) Math.max(0, player.getFoodLevel()));
+        if (player.getCurrentInput().isSprint() || player.isSprinting()) {
+            food -= plugin.settings().player().sprintDrainPerSecond() / 4;
+        } else {
+            food += plugin.settings().player().sprintRecoveryPerSecond() / 4;
+        }
+        food = Math.clamp(food, 0.0D, FOOD_MAX);
+        foodLevels.put(player.getUniqueId(), food);
+        player.setFoodLevel((int) Math.floor(food));
+        player.setSaturation(20.0F);
+        player.setExhaustion(0.0F);
+    }
+
+    private void fixVitals(Player player) {
+        AttributeInstance maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        if (maxHealth != null && !player.isDead()) {
+            try {
+                player.setHealth(maxHealth.getValue());
+            } catch (IllegalArgumentException ignored) {
+                // Ignore invalid health states during death/respawn transitions.
+            }
+        }
+        player.setFoodLevel(FOOD_MAX);
+        player.setSaturation(20.0F);
+        player.setExhaustion(0.0F);
+    }
+
+    private boolean isSessionPlayer(Player player) {
+        return sessionManager.sessionForPlayer(player.getUniqueId()).isPresent()
+                && sessionManager.sessionForWorld(player.getWorld()).isPresent();
+    }
+
+    private void applyBlockers(Player player) {
+        PlayerInventory inventory = player.getInventory();
+        for (int slot = 9; slot <= 35; slot++) {
+            ItemStack item = inventory.getItem(slot);
+            if (isBlocker(item)) {
+                continue;
+            }
+            if (item != null && !item.getType().isAir()) {
+                if (PlayerInventorySupport.canFitHotbar(inventory, item)) {
+                    PlayerInventorySupport.addToHotbar(inventory, item);
+                } else {
+                    player.getWorld().dropItemNaturally(player.getLocation(), item);
+                }
+            }
+            inventory.setItem(slot, blocker());
+        }
+    }
+
+    private void removeBlockers(PlayerInventory inventory) {
+        for (int slot = 9; slot <= 35; slot++) {
+            if (isBlocker(inventory.getItem(slot))) {
+                inventory.setItem(slot, null);
+            }
+        }
+    }
+
+    private ItemStack blocker() {
+        ItemStack item = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            meta.displayName(Component.text(" "));
+            meta.getPersistentDataContainer().set(
+                    new org.bukkit.NamespacedKey(plugin, BLOCKER_KEY),
+                    PersistentDataType.BYTE,
+                    (byte) 1
+            );
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
+    private boolean isBlocker(ItemStack item) {
+        if (item == null || item.getType() != Material.GRAY_STAINED_GLASS_PANE || !item.hasItemMeta()) {
+            return false;
+        }
+        ItemMeta meta = item.getItemMeta();
+        return meta != null && meta.getPersistentDataContainer().has(
+                new org.bukkit.NamespacedKey(plugin, BLOCKER_KEY),
+                PersistentDataType.BYTE
+        );
+    }
+}

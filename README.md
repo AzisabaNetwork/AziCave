@@ -1,6 +1,6 @@
-# AziRouge
+# AziCave
 
-AziRouge は、ローグライク向けにダンジョンピースをランダム接続して生成する Paper プラグインです。  
+AziCave は、ローグライク向けにダンジョンピースをランダム接続して生成する Paper プラグインです。
 外部 `schematic` / `schem` を WorldEdit 経由で配置し、入口の正対・隣接判定に成功した接続だけを開口します。
 
 ## 前提
@@ -28,11 +28,11 @@ AziRouge は、ローグライク向けにダンジョンピースをランダ�
 ### 生成
 
 ```text
-/azirouge generate
-/azirouge generate --patterns=templates/*.yml,templates/boss/*.yml
-/azirouge generate --start=start_room --world=dungeon_world --x=100 --y=64 --z=100
-/azirouge generate --seed=123456789
-/azirouge generate --depth=10
+/azicave generate
+/azicave generate --patterns=templates/*.yml,templates/boss/*.yml
+/azicave generate --start=start_room --world=dungeon_world --x=100 --y=64 --z=100
+/azicave generate --seed=123456789
+/azicave generate --depth=10
 ```
 
 指定可能なオプション:
@@ -47,14 +47,14 @@ AziRouge は、ローグライク向けにダンジョンピースをランダ�
 ### リロード
 
 ```text
-/azirouge reload
+/azicave reload
 ```
 
 ### デバッグ切替
 
 ```text
-/azirouge debug on
-/azirouge debug off
+/azicave debug on
+/azicave debug off
 ```
 
 ### ゲーム内 authoring
@@ -63,18 +63,18 @@ piece と entrance は WorldEdit 選択とコマンドだけで更新できま�
 piece の schematic origin は常に WorldEdit 選択範囲の最小 corner へ固定されます。
 
 ```text
-/azirouge author piece upsert templates/custom.yml room_a schematics/custom/room_a.schem 1.5
-/azirouge author entrance upsert templates/custom.yml room_a north_gate NORTH
-/azirouge author entrance remove templates/custom.yml room_a north_gate
+/azicave author piece upsert templates/custom.yml room_a schematics/custom/room_a.schem 1.5
+/azicave author entrance upsert templates/custom.yml room_a north_gate NORTH
+/azicave author entrance remove templates/custom.yml room_a north_gate
 ```
 
 推奨手順:
 
 1. WorldEdit でピース全体を選択する
-2. `/azirouge author piece upsert ...` を実行する
+2. `/azicave author piece upsert ...` を実行する
 3. この時点で piece の origin は選択範囲の最小 corner に固定される
 4. 次に入口面を WorldEdit で 2 点選択する
-5. `/azirouge author entrance upsert ...` を実行する
+5. `/azicave author entrance upsert ...` を実行する
 
 `author piece upsert` は `bounds`、`schematic`、`weight` を更新します。  
 `author piece upsert` 実行時に piece の最小 corner は補助メタデータとして保存されます。  
@@ -176,7 +176,7 @@ pieces:
 
 ## デバッグログ
 
-`/azirouge debug on` または `debug.enabled: true` で有効化できます。
+`/azicave debug on` または `debug.enabled: true` で有効化できます。
 
 出力例:
 
@@ -188,7 +188,7 @@ debug|scope=carve|event=applied|parentBox=100,65,100->102,67,102|childBox=100,65
 
 ## 敵配置について
 
-Mob は `azirouge.mobs` の重みとスポーン間隔でダンジョン内に出現します。テンプレート YAML の `enemy-sockets` は読みません。
+Mob は `azicave.mobs` の重みとスポーン間隔でダンジョン内に出現します。テンプレート YAML の `enemy-sockets` は読みません。
 
 ## 開発メモ
 
@@ -200,11 +200,11 @@ Mob は `azirouge.mobs` の重みとスポーン間隔でダンジョン内に�
 
 ## Session
 
-- `/azirouge session create [maxPlayers]` で session を作成します。
-- `/azirouge session join <sessionId>` で参加します。
-- `/azirouge session leave` で退出します。
-- `/azirouge session list` で state、round、人数、共有資金などを確認します。
-- `/azirouge session forceend <sessionId>` で強制終了します。
+- `/azicave session create [maxPlayers]` で session を作成します。
+- `/azicave session join <sessionId>` で参加します。
+- `/azicave session leave` で退出します。
+- `/azicave session list` で state、round、人数、共有資金などを確認します。
+- `/azicave session forceend <sessionId>` で強制終了します。
 - session owner は表示・作成者記録用のみで、特別権限はありません。
 - `sessions.home-template-world-path` のテンプレート world を session 作成時にコピーし、`sessions.world-name-prefix + sessionId` の world としてロードします。
 - session 終了時は world unload 後に session world folder を削除します。
@@ -214,7 +214,7 @@ Mob は `azirouge.mobs` の重みとスポーン間隔でダンジョン内に�
 
 - `home.spawn` が session 参加時の initial spawn、`home.return-spawn` が dungeon から帰還した時の spawn です。
 - `home.area` は帰還済み判定と、就寝可能なベッドの範囲として使います。
-- `/azirouge round start [maxDepth]` で round を開始します。プレイヤーには「危険度」として表示され、ダイアログでは `gui.depth.levels`（`desc` と `depth` の対応表）から選択します。テンプレートは `generation` の設定を常に使用します。round 開始時に player は dungeon へ即時 teleport されず、家側 portal から入ります。
+- `/azicave round start [maxDepth]` で round を開始します。プレイヤーには「危険度」として表示され、ダイアログでは `gui.depth.levels`（`desc` と `depth` の対応表）から選択します。テンプレートは `generation` の設定を常に使用します。round 開始時に player は dungeon へ即時 teleport されず、家側 portal から入ります。
 - round は朝に始まり、Minecraft 時刻 18000（既定値、深夜）で強制終了します。時刻は `round-timing` で設定できます。
 - 生存者の `round-timing.sleep.minimum-percentage`% 以上が深い睡眠に達して `wait-seconds` 秒経つか、生存者全員が深く眠ると夜をスキップし、同じ危険度で次ラウンドを自動開始します。昼は確認ダイアログで夜へ進めてから、ホーム内のベッドで眠れます。
 - 深夜時点で眠っていない player と、ラウンド終了時にホームへ帰還していない player はそのラウンドの死亡扱いになります。
@@ -237,9 +237,9 @@ Mob は `azirouge.mobs` の重みとスポーン間隔でダンジョン内に�
 
 - 各 session は共有資金 `sharedBalance` を持ちます。
 - session 作成時に `economy.initial-balance` が付与されます。
-- `/azirouge money` で自分の session の共有資金と対象 round のノルマを確認できます。
-- `/azirouge money set <sessionId> <amount>` で共有資金を設定します。
-- `/azirouge money add <sessionId> <amount>` で共有資金を加算します。
+- `/azicave money` で自分の session の共有資金と対象 round のノルマを確認できます。
+- `/azicave money set <sessionId> <amount>` で共有資金を設定します。
+- `/azicave money add <sessionId> <amount>` で共有資金を加算します。
 - `economy.quota.delivery-chest` に session ごとの納品箱を設置します。ラウンド終了時はこのチェスト内だけを換金し、player inventory 内のアイテムは納品に含めません。
 - ノルマは `ceil((economy.quota.base + economy.quota.per-round * currentRound) * economy.quota.multiplier)` です。納品価格がノルマ以上なら達成となり、村人の怒りが1段階下がります。
 - 未達が `economy.quota.max-consecutive-misses` 回連続すると GAME_OVER です。進行度はスコアボードの村人の怒りゲージに表示され、`warning-remaining` 以下では警告します。
@@ -256,7 +256,7 @@ Mob は `azirouge.mobs` の重みとスポーン間隔でダンジョン内に�
 
 ```yaml
 shop:
-  title: AziRouge Shop
+  title: AziCave Shop
   trades:
     - id: bread
       material: BREAD
@@ -282,9 +282,9 @@ shop:
 プレイヤー統計とランキングはMariaDBへ保存します。DB停止中もゲームセッションは継続しますが、統計の保存とランキング更新は一時停止します。
 
 ```sql
-CREATE DATABASE azirouge CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'azirouge'@'%' IDENTIFIED BY 'replace-with-a-strong-password';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX ON azirouge.* TO 'azirouge'@'%';
+CREATE DATABASE azicave CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'azicave'@'%' IDENTIFIED BY 'replace-with-a-strong-password';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX ON azicave.* TO 'azicave'@'%';
 FLUSH PRIVILEGES;
 ```
 
@@ -295,8 +295,8 @@ database:
   enabled: true
   host: 127.0.0.1
   port: 3306
-  name: azirouge
-  username: azirouge
+  name: azicave
+  username: azicave
   password: "replace-with-a-strong-password"
   use-ssl: false
   maximum-pool-size: 4
@@ -319,4 +319,4 @@ leaderboard:
 
 `daily`、`weekly`、`monthly`、`total` の各配置を個別に指定できます。日次は当日0時、週次は月曜日0時、月次は当月1日を、`leaderboard.timezone` のカレンダー境界として集計します。同点の場合は対象ラウンドへの到達時刻が早いプレイヤーを上位にします。
 
-`/azirouge stats` で自分の統計を、`azirouge.stats.others` 権限があれば `/azirouge stats <player>` でオフラインを含む他プレイヤーの統計を確認できます。記録対象は最大・総到達ラウンド数、セッション参加数、死亡・ゲームオーバー数、実際に到達した最大ダンジョン深度、累積・最長プレイ時間、Mob撃破数、宝箱・宝物取得数、累積売却金額、途中離脱・切断数です。
+`/azicave stats` で自分の統計を、`azicave.stats.others` 権限があれば `/azicave stats <player>` でオフラインを含む他プレイヤーの統計を確認できます。記録対象は最大・総到達ラウンド数、セッション参加数、死亡・ゲームオーバー数、実際に到達した最大ダンジョン深度、累積・最長プレイ時間、Mob撃破数、宝箱・宝物取得数、累積売却金額、途中離脱・切断数です。

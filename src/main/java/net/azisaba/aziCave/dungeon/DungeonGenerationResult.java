@@ -1,0 +1,15 @@
+package net.azisaba.aziCave.dungeon;
+
+import org.bukkit.Location;
+
+import java.util.List;
+
+public record DungeonGenerationResult(
+        long seed,
+        int targetPieceCount,
+        int placedPieceCount,
+        int connectionCount,
+        List<PlacedPiece> placedPieces,
+        Location spawnLocation
+) {
+}

@@ -1,0 +1,1648 @@
+package net.azisaba.aziCave.game;
+
+import net.azisaba.aziCave.AziCave;
+import net.azisaba.aziCave.dungeon.DungeonGenerationResult;
+import net.azisaba.aziCave.dungeon.GenerationExecutionRequest;
+import net.azisaba.aziCave.dungeon.PlacedPiece;
+import net.azisaba.aziCave.entity.MobSpawnManager;
+import net.azisaba.aziCave.math.BlockBox;
+import net.azisaba.aziCave.math.IntVector3;
+import net.azisaba.aziCave.schematic.SchematicPlacementException;
+import net.azisaba.aziCave.template.TemplateLoadException;
+import net.azisaba.aziCave.statistics.ExitReason;
+import net.azisaba.aziCave.statistics.PlayerSnapshot;
+import org.bukkit.Bukkit;
+import org.bukkit.Color;
+import org.bukkit.GameMode;
+import org.bukkit.Location;
+import org.bukkit.Sound;
+import org.bukkit.World;
+import org.bukkit.WorldCreator;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
+import org.bukkit.entity.Firework;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.meta.FireworkMeta;
+import org.bukkit.scheduler.BukkitTask;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.event.ClickEvent;
+
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
+
+public final class GameSessionManager {
+    private static final long ROUND_RESULT_TITLE_TICKS = 100L;
+    private static final long FIRST_ROUND_TITLE_DELAY_TICKS = 70L;
+    private static final Map<Attribute, Double> SESSION_ATTRIBUTE_VALUES = Map.of(
+            Attribute.MAX_HEALTH, 20.0D,
+            Attribute.MOVEMENT_SPEED, 0.1D,
+            Attribute.ATTACK_SPEED, 4.0D,
+            Attribute.ENTITY_INTERACTION_RANGE, 2.7D
+    );
+
+    private final AziCave plugin;
+    private final MobSpawnManager mobSpawnManager;
+    private final SessionWorldService sessionWorldService;
+    private final Map<String, GameSession> sessionsById = new HashMap<>();
+    private final Map<UUID, GameSession> sessionsByWorld = new HashMap<>();
+    private final Map<UUID, String> playerToSessionId = new HashMap<>();
+    private final Map<UUID, PlayerAttributeSnapshot> playerAttributeSnapshots = new HashMap<>();
+    private final Map<UUID, GameMode> playerGameModeSnapshots = new HashMap<>();
+    private final Map<UUID, PlayerVitalsSnapshot> playerVitalsSnapshots = new HashMap<>();
+    private final Map<UUID, Integer> spectatorTargetIndexes = new HashMap<>();
+    private final Set<UUID> pendingSessionCreations = new HashSet<>();
+    private boolean shuttingDown;
+
+    public GameSessionManager(AziCave plugin, MobSpawnManager mobSpawnManager) {
+        this.plugin = plugin;
+        this.mobSpawnManager = mobSpawnManager;
+        this.sessionWorldService = new SessionWorldService(plugin);
+    }
+
+    public Optional<GameSession> sessionForPlayer(UUID playerId) {
+        String sessionId = playerToSessionId.get(playerId);
+        if (sessionId == null) {
+            return Optional.empty();
+        }
+        GameSession session = sessionsById.get(sessionId);
+        if (session == null) {
+            playerToSessionId.remove(playerId);
+            return Optional.empty();
+        }
+        return Optional.of(session);
+    }
+
+    public Optional<GameSession> sessionForWorld(World world) {
+        return Optional.ofNullable(sessionsByWorld.get(world.getUID()));
+    }
+
+    public Optional<GameSession> sessionById(String sessionId) {
+        return Optional.ofNullable(sessionsById.get(normalizeSessionId(sessionId)));
+    }
+
+    public Collection<GameSession> sessions() {
+        return List.copyOf(sessionsById.values());
+    }
+
+    public boolean isActivePlaying(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        return session != null
+                && session.state() == SessionState.IN_ROUND
+                && session.alivePlayers().contains(player.getUniqueId())
+                && player.getWorld().getUID().equals(session.world().getUID())
+                && player.getGameMode() != GameMode.SPECTATOR;
+    }
+
+    public void beginBossBattle(GameSession session, String bossBattleId, Location destination, Collection<UUID> participants) {
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(plugin, () -> beginBossBattle(session, bossBattleId, destination, participants));
+            return;
+        }
+        if (!sessionsById.containsKey(session.sessionId())) {
+            throw fail("session.error.inactive", "&cセッションはすでに終了しています。");
+        }
+        if (!DepartureGuard.canPrepare(session.state(), session.roundState())) {
+            throw fail("boss.error.lobby-only", "&cボス戦はロビーでのみ挑戦できます。");
+        }
+        if (session.isBossBattleActive()) {
+            throw fail("boss.error.already-active", "&cボス戦はすでに進行中です。");
+        }
+
+        Set<UUID> activeParticipants = new HashSet<>(participants);
+        if (activeParticipants.isEmpty()) {
+            throw fail("boss.error.no-online-members", "&cオンラインのセッションメンバーがいません。");
+        }
+
+        session.setActiveParticipants(activeParticipants);
+        session.startBossBattle(bossBattleId, destination);
+        session.setRoundState(RoundState.ACTIVE);
+        session.setState(SessionState.IN_ROUND);
+        for (UUID playerId : activeParticipants) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null) {
+                session.markDead(playerId);
+                continue;
+            }
+            setRoundSurvival(player);
+            initializeSessionPlayerState(player);
+            player.teleport(destination);
+        }
+        broadcastTitle(session, m("boss.title.start", "&5ボス戦"), m("boss.subtitle.start", "&e全員で挑め"), 10, 70, 20);
+        broadcastSound(session, Sound.ENTITY_EVOKER_PREPARE_SUMMON, 0.8F, 0.9F);
+        broadcastSessionMessage(session, m("boss.challenging", "&dボス戦だ。{boss}", "boss", bossBattleId));
+        updateRoundAfterAliveChange(session);
+    }
+
+    public boolean reviveBossPlayer(GameSession session, Player player, Location location) {
+        if (!session.isBossBattleActive() || session.state() != SessionState.IN_ROUND || !session.deadPlayers().contains(player.getUniqueId())) {
+            return false;
+        }
+        session.markAlive(player.getUniqueId());
+        setRoundSurvival(player);
+        initializeSessionPlayerState(player);
+        Location target = location == null ? session.activeBossDestination() : location.clone();
+        if (target != null) {
+            player.teleport(target);
+        }
+        AttributeInstance maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        if (maxHealth != null && !player.isDead()) {
+            player.setHealth(Math.max(1.0D, maxHealth.getValue() / 2.0D));
+        }
+        broadcastSessionMessage(session, m("boss.member-revived", "&a{player} が蘇生されました。生存: {alive}", "player", player.getName(), "alive", session.alivePlayers().size()));
+        return true;
+    }
+
+    public void returnBossPlayerHome(GameSession session, Player player) {
+        if (!session.isBossBattleActive() || !session.isMember(player.getUniqueId())) {
+            return;
+        }
+        setRoundSurvival(player);
+        initializeSessionPlayerState(player);
+        player.teleport(session.returnSpawnLocation());
+        sendTitle(player, m("session.title.returned-home", "&aホームへ"), m("session.subtitle.waiting-party", "&e仲間を待っている"), 8, 50, 12);
+        player.playSound(player.getLocation(), Sound.BLOCK_RESPAWN_ANCHOR_DEPLETE, 0.5F, 1.05F);
+    }
+
+    public void finishBossBattleVictory(GameSession session) {
+        if (!session.isBossBattleActive()) {
+            return;
+        }
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                returnBossPlayerHome(session, player);
+            }
+        }
+        session.clearRoundPlayers();
+        session.clearBossBattle();
+        session.setRoundState(RoundState.ENDED);
+        session.setState(SessionState.LOBBY);
+        broadcastTitle(session, m("boss.title.defeated", "&6ボス撃破"), m("round.subtitle.returned-home", "&eホームに戻った"), 10, 70, 20);
+        broadcastSound(session, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.7F, 1.05F);
+        broadcastSessionMessage(session, m("boss.cleared", "&aボスを倒した。準備ができたら、次の探索を始めて。"));
+    }
+
+    public void cleanupLeftoverWorldFoldersOnStartup() {
+        sessionWorldService.cleanupLeftoverWorldFoldersOnStartup();
+    }
+
+    public CompletableFuture<GameSession> startSessionAsync(Player player) {
+        return startSessionAsync(player, plugin.settings().sessions().defaultMaxPlayers());
+    }
+
+    public CompletableFuture<GameSession> startSessionAsync(Player player, int requestedMaxPlayers) {
+        CompletableFuture<GameSession> future = new CompletableFuture<>();
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(plugin, () -> startSessionAsync(player, requestedMaxPlayers)
+                    .whenComplete((session, ex) -> {
+                        if (ex != null) {
+                            future.completeExceptionally(ex);
+                        } else {
+                            future.complete(session);
+                        }
+                    }));
+            return future;
+        }
+
+        SessionCreationPlan plan;
+        try {
+            plan = prepareSessionCreation(player, requestedMaxPlayers);
+        } catch (RuntimeException ex) {
+            future.completeExceptionally(ex);
+            return future;
+        }
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                sessionWorldService.copyTemplateWorld(plan.templateWorldFolder(), plan.worldFolder(), plan.worldName());
+            } catch (RuntimeException ex) {
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    pendingSessionCreations.remove(plan.playerId());
+                    future.completeExceptionally(ex);
+                });
+                return;
+            }
+
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                try {
+                    future.complete(createSessionAfterTemplateCopy(player, plan));
+                } catch (RuntimeException ex) {
+                    future.completeExceptionally(ex);
+                }
+            });
+        });
+
+        return future;
+    }
+
+    private SessionCreationPlan prepareSessionCreation(Player player, int requestedMaxPlayers) {
+        if (sessionForPlayer(player.getUniqueId()).isPresent()) {
+            throw fail("session.error.already-in-other", "&c別のセッションに参加中です。先に退出してください。");
+        }
+        int maxPlayers = validateMaxPlayers(requestedMaxPlayers);
+        if (!pendingSessionCreations.add(player.getUniqueId())) {
+            throw fail("session.error.already-creating", "&cセッションを作成中です。");
+        }
+
+        String sessionId = allocateSessionId();
+        String worldName = plugin.settings().sessions().worldNamePrefix() + sessionId;
+        Path worldFolder = sessionWorldService.sessionWorldFolder(worldName);
+        Path templateWorldFolder = plugin.settings().sessions().homeTemplateWorldPath().toAbsolutePath().normalize();
+        return new SessionCreationPlan(player.getUniqueId(), sessionId, worldName, worldFolder, templateWorldFolder, maxPlayers);
+    }
+
+    private GameSession createSessionAfterTemplateCopy(Player player, SessionCreationPlan plan) {
+        try {
+            if (!player.isOnline()) {
+                sessionWorldService.deleteWorldFolder(plan.worldFolder(), plan.worldName());
+                throw fail("session.error.player-offline", "&cセッション作成中にオフラインになりました。");
+            }
+            if (sessionForPlayer(player.getUniqueId()).isPresent()) {
+                sessionWorldService.deleteWorldFolder(plan.worldFolder(), plan.worldName());
+                throw fail("session.error.already-in-other", "&c別のセッションに参加中です。先に退出してください。");
+            }
+
+            World world = Bukkit.createWorld(new WorldCreator(plan.worldName()));
+            if (world == null) {
+                sessionWorldService.deleteWorldFolder(plan.worldFolder(), plan.worldName());
+                throw fail("session.error.world-create-failed", "&cセッションワールド {world} を作成できませんでした。", "world", plan.worldName());
+            }
+            world.setAutoSave(false);
+            plugin.roundTimeService().prepareWorld(world);
+
+            try {
+                GameSession session = new GameSession(
+                        plan.sessionId(),
+                        player.getUniqueId(),
+                        world,
+                        plan.maxPlayers(),
+                        homeSpawn(world),
+                        homeReturnSpawn(world),
+                        plugin.settings().home().area(),
+                        List.of(),
+                        plugin.settings().economy().initialBalance()
+                );
+                session.setMaxDepth(plugin.settings().dungeon().defaultMaxDepth());
+                plugin.economyService().prepareDeliveryChest(session);
+                registerSession(session);
+                addPlayerToSession(session, player, player.getLocation());
+
+                if (!player.teleport(session.spawnLocation())) {
+                    unregisterSession(session);
+                    restorePlayerAttributes(player);
+                    restorePlayerVitals(player);
+                    throw fail("session.error.teleport-failed", "&cセッションワールドへテレポートできませんでした。");
+                }
+
+                preparePlayerForSessionEntry(player);
+                sendTitle(player, m("session.title.brand", "&6AziCave"), m("session.subtitle.created", "&eセッション {session}", "session", session.sessionId()), 10, 55, 12);
+                player.playSound(player.getLocation(), Sound.UI_TOAST_IN, 0.8F, 1.1F);
+                sendMessage(player, m("session.created", "&aCreated session {session}. Invite players with /azicave session join {session}.", "session", session.sessionId()));
+                sendCopyableSessionId(player, session);
+                sendMessage(player, m("session.prepare-start-round", "&e装備を整えてダンジョンに入ろう！"));
+                JourneyDisplayService.hintOnce(plugin, player, "home", "&e商人で支度してから、出発の印へ。");
+                BukkitTask mobSpawnTask = mobSpawnManager.start(session);
+                session.setMobSpawnTask(mobSpawnTask);
+                plugin.statisticsService().recordSessionJoin(session.runId(), player);
+                return session;
+            } catch (RuntimeException ex) {
+                GameSession registered = sessionsByWorld.get(world.getUID());
+                if (registered != null) {
+                    unregisterSession(registered);
+                }
+                restorePlayerAttributes(player);
+                restorePlayerVitals(player);
+                sessionWorldService.cleanupWorld(world);
+                throw ex;
+            }
+        } finally {
+            pendingSessionCreations.remove(plan.playerId());
+        }
+    }
+
+    public GameSession joinSession(Player player, String sessionId) {
+        GameSession session = sessionById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException(m("session.error.not-found", "&cセッションが見つかりません: {session}", "session", sessionId)));
+        if (!canJoinSession(session)) {
+            throw fail("session.error.join-state", "&cセッション {session} には、いまの状態では参加できません。", "session", session.sessionId());
+        }
+        if (sessionForPlayer(player.getUniqueId()).isPresent()) {
+            throw fail("session.error.already-in-other", "&c別のセッションに参加中です。先に退出してください。");
+        }
+        if (!session.hasRoomFor(player.getUniqueId())) {
+            throw fail("session.error.full", "&cセッション {session} は満員です。", "session", session.sessionId());
+        }
+
+        Location returnLocation = player.getLocation();
+        addPlayerToSession(session, player, returnLocation);
+        cancelIdleTimeout(session);
+        if (!player.teleport(session.spawnLocation())) {
+            removePlayerFromSession(session, player.getUniqueId());
+            restorePlayerAttributes(player);
+            restorePlayerVitals(player);
+            scheduleIdleTimeoutIfNeeded(session);
+            throw fail("session.error.join-teleport-failed", "&cセッション {session} へテレポートできませんでした。", "session", session.sessionId());
+        }
+        preparePlayerForSessionEntry(player);
+        if (session.state() == SessionState.IN_ROUND) {
+            session.markPendingNextRound(player.getUniqueId());
+            makeRoundSpectatorAtHome(session, player);
+        } else {
+            restoreGameMode(player);
+        }
+        sendTitle(player, m("session.title.brand", "&6AziCave"), m("session.subtitle.joined", "&eセッション {session} に入った", "session", session.sessionId()), 10, 55, 12);
+        player.playSound(player.getLocation(), Sound.UI_TOAST_IN, 0.8F, 1.1F);
+        sendMessage(player, m("session.joined", "&aJoined session {session}.", "session", session.sessionId()));
+        if (session.state() == SessionState.IN_ROUND) {
+            sendMessage(player, m("session.joined-in-round", "&eA round is in progress, so you will spectate this round. You can play from the next round."));
+        } else {
+            broadcastSessionMessage(session, m("session.member-joined", "&e{player} joined the session. Players: {players}/{max}",
+                    "player", player.getName(), "players", session.members().size(), "max", session.maxPlayers()));
+            if (session.currentRound() == 0) {
+                sendMessage(player, m("session.prepare-start-round", "&e装備を整えてダンジョンに入ろう！"));
+            }
+            JourneyDisplayService.hintOnce(plugin, player, "home", "&e商人で支度してから、出発の印へ。");
+        }
+        plugin.statisticsService().recordSessionJoin(session.runId(), player);
+        return session;
+    }
+
+    public GameSession leaveSession(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId())
+                .orElseThrow(() -> fail("session.error.not-in-session", "&cセッションに参加していません。"));
+        if (session.state() == SessionState.CLOSING) {
+            throw fail("session.error.leave-state", "&cセッション {session} からは、いまの状態では退出できません。", "session", session.sessionId());
+        }
+
+        boolean wasAlive = session.alivePlayers().contains(player.getUniqueId());
+        boolean inSessionWorld = player.getWorld().getUID().equals(session.world().getUID());
+        if (inSessionWorld) {
+            Location returnLocation = resolveReturnLocation(session, player.getUniqueId());
+            boolean teleported = returnLocation != null && player.teleport(returnLocation);
+            if (!teleported) {
+                throw fail("session.error.leave-teleport-failed", "&cセッション {session} からテレポートできませんでした。", "session", session.sessionId());
+            }
+        }
+
+        restorePlayerAttributes(player);
+        restoreGameMode(player);
+        restorePlayerVitals(player);
+        GameOverItemSupport.remove(plugin, player);
+        ExitReason exitReason = session.state() == SessionState.GAME_OVER
+                ? ExitReason.SESSION_END
+                : ExitReason.LEAVE;
+        plugin.statisticsService().recordSessionExit(session.runId(), player.getUniqueId(), exitReason);
+        if (wasAlive) {
+            session.markDead(player.getUniqueId());
+        }
+        removePlayerFromSession(session, player.getUniqueId());
+        if (wasAlive) {
+            updateRoundAfterAliveChange(session);
+        }
+        scheduleIdleTimeoutIfNeeded(session);
+        sendMessage(player, m("session.left", "&eLeft AziCave session {session}.", "session", session.sessionId()));
+        broadcastSessionMessage(session, m("session.member-left", "&e{player} left the session. Players: {players}/{max}",
+                "player", player.getName(), "players", session.members().size(), "max", session.maxPlayers()));
+        return session;
+    }
+
+    public DungeonGenerationResult startRound(GameSession session, int maxDepth)
+            throws TemplateLoadException, SchematicPlacementException {
+        if (!Bukkit.isPrimaryThread()) {
+            try {
+                return Bukkit.getScheduler().callSyncMethod(
+                        plugin,
+                        () -> startRound(session, maxDepth)
+                ).get();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw fail("round.error.interrupted", "&c探索開始が中断されました。");
+            } catch (ExecutionException ex) {
+                Throwable cause = ex.getCause();
+                if (cause instanceof TemplateLoadException templateLoadException) {
+                    throw templateLoadException;
+                }
+                if (cause instanceof SchematicPlacementException schematicPlacementException) {
+                    throw schematicPlacementException;
+                }
+                if (cause instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw fail("round.error.failed", "&c探索開始に失敗しました。");
+            }
+        }
+
+        if (!sessionsById.containsKey(session.sessionId())) {
+            throw fail("session.error.inactive", "&cセッションはすでに終了しています。");
+        }
+        if (!DepartureGuard.canStartRound(session.state(), session.roundState())) {
+            throw fail("round.error.not-ready", "&c現在は探索を開始できません。");
+        }
+
+        List<UUID> participants = session.onlineMembers().stream()
+                .filter(playerId -> Bukkit.getPlayer(playerId) != null)
+                .toList();
+        if (participants.isEmpty()) {
+            throw fail("round.error.no-online-members", "&c探索を開始できるオンラインメンバーがいません。");
+        }
+
+        restoreRoundInactivePlayersForNextRound(session);
+
+        SessionState previousState = session.state();
+        RoundState previousRoundState = session.roundState();
+        int previousRound = session.currentRound();
+        IntVector3 previousOrigin = session.currentDungeonOrigin();
+        BlockBox previousBounds = session.currentDungeonBounds();
+        List<PlacedPiece> previousPieces = session.placedPieces();
+
+        session.setState(SessionState.IN_ROUND);
+        session.setRoundState(RoundState.PREPARING);
+        session.setCurrentRound(DepartureGuard.dayToStart(previousRound));
+        IntVector3 origin = allocateDungeonOrigin(session);
+        session.setCurrentDungeonOrigin(origin);
+        try {
+            DungeonGenerationResult result = plugin.dungeonGenerator().generate(
+                    new GenerationExecutionRequest(
+                            plugin.settings().generation().templatePatterns(),
+                            plugin.settings().generation().startPieceId(),
+                            session.world(),
+                            origin,
+                            ThreadLocalRandom.current().nextLong(),
+                            maxDepth
+                    ),
+                    plugin.settings()
+            );
+
+            session.setPlacedPieces(result.placedPieces());
+            session.setCurrentDungeonBounds(resolveDungeonBounds(result.placedPieces(), origin));
+            session.setMaxDepth(maxDepth);
+            session.setActiveParticipants(new java.util.HashSet<>(participants));
+            session.setRoundState(RoundState.ACTIVE);
+            session.setState(SessionState.IN_ROUND);
+            plugin.portalService().installRoundPortals(session);
+            plugin.roundTimeService().beginRound(session);
+            if (session.currentRound() == 1) {
+                Bukkit.getScheduler().runTaskLater(
+                        plugin,
+                        () -> announceRoundStart(session),
+                        FIRST_ROUND_TITLE_DELAY_TICKS
+                );
+            }
+
+            for (UUID playerId : participants) {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player == null) {
+                    session.markDead(playerId);
+                    continue;
+                }
+                setRoundSurvival(player);
+                initializeSessionPlayerState(player);
+            }
+            plugin.statisticsService().recordRoundReached(
+                    session.runId(),
+                    participants.stream()
+                            .map(Bukkit::getPlayer)
+                            .filter(java.util.Objects::nonNull)
+                            .map(PlayerSnapshot::from)
+                            .toList(),
+                    session.currentRound(),
+                    maxDepth
+            );
+            updateRoundAfterAliveChange(session);
+            return result;
+        } catch (TemplateLoadException | SchematicPlacementException | RuntimeException ex) {
+            session.setState(previousState);
+            session.setRoundState(previousRoundState);
+            session.setCurrentRound(previousRound);
+            session.setCurrentDungeonOrigin(previousOrigin);
+            session.setCurrentDungeonBounds(previousBounds);
+            session.setPlacedPieces(previousPieces);
+            plugin.portalService().clearRoundPortals(session);
+            throw ex;
+        }
+    }
+
+    public RoundEndResult endRound(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId())
+                .orElseThrow(() -> fail("session.error.not-in-session", "&cセッションに参加していません。"));
+        if (session.state() != SessionState.IN_ROUND) {
+            throw fail("round.error.none-active", "&cこのセッションに進行中の探索はありません。");
+        }
+        if (session.isBossBattleActive()) {
+            throw fail("round.error.boss-not-end-command", "&cボス戦は一日を終えるコマンドでは終了できません。");
+        }
+        throw fail("round.error.sleep-required", "&c一日を終えるにはホームへ帰還し、ベッドで休んでください。");
+    }
+
+    public RoundEndResult finishTimedRound(GameSession session, boolean midnight, Set<UUID> sleepingPlayers) {
+        if (!sessionsById.containsKey(session.sessionId())
+                || session.state() != SessionState.IN_ROUND
+                || session.roundState() != RoundState.ACTIVE
+                || session.isBossBattleActive()) {
+            return null;
+        }
+
+        session.setRoundState(RoundState.ENDING);
+        Set<UUID> sleepers = Set.copyOf(sleepingPlayers);
+        for (UUID playerId : List.copyOf(session.alivePlayers())) {
+            Player alivePlayer = Bukkit.getPlayer(playerId);
+            boolean atHome = alivePlayer != null && isInHomeArea(session, alivePlayer.getLocation());
+            boolean missedReturn = !atHome;
+            boolean awakeAtMidnight = midnight && !sleepers.contains(playerId);
+            if (missedReturn || awakeAtMidnight) {
+                session.markDead(playerId);
+                session.markPendingNextRound(playerId);
+                if (alivePlayer != null) {
+                    sendMessage(alivePlayer, m(
+                            awakeAtMidnight ? "round.midnight-out" : "round.away-out",
+                            awakeAtMidnight
+                                    ? "&c{deadline}までに眠れなかったため、今日は死亡扱いです。"
+                                    : "&c帰還できなかったため、今日は死亡扱いです。",
+                            "deadline", RoundClock.format(plugin.settings().roundTiming().deadlineTimeTicks())
+                    ));
+                }
+            }
+        }
+        boolean allPlayersOut = session.alivePlayers().isEmpty();
+
+        closeOnlineMemberInventories(session);
+        EconomyService.SellResult delivery = plugin.economyService().sellDeliveryChestLoot(session);
+        EconomyService.QuotaResult quota = plugin.economyService().evaluateQuota(session, session.currentRound(), delivery);
+        RoundEndResult result = new RoundEndResult(delivery, quota);
+
+        moveOnlineMembersHome(session);
+        session.clearAlivePlayers();
+        plugin.portalService().clearRoundPortals(session);
+        plugin.roundTimeService().endRound(session);
+
+        boolean gameOver = allPlayersOut || quota.progress().gameOver();
+        session.setRoundState(RoundState.ENDED);
+        session.setState(gameOver ? SessionState.GAME_OVER : SessionState.LOBBY);
+        announceRoundEnd(session, result);
+
+        if (gameOver) {
+            clearOnlineMemberInventories(session);
+            String reason = allPlayersOut
+                    ? m("game-over.reason.all-out", "全員が脱落しました。")
+                    : m("game-over.reason.quota", "ノルマ未達が連続しました。");
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (sessionsById.containsKey(session.sessionId()) && session.state() == SessionState.GAME_OVER) {
+                    announceGameOver(session, reason);
+                }
+            }, ROUND_RESULT_TITLE_TICKS);
+        } else {
+            session.setCurrentRound(session.currentRound() + 1);
+            Bukkit.getScheduler().runTaskLater(
+                    plugin,
+                    () -> announceRoundStart(session),
+                    ROUND_RESULT_TITLE_TICKS
+            );
+        }
+        return result;
+    }
+
+    public record RoundEndResult(
+            EconomyService.SellResult sellResult,
+            EconomyService.QuotaResult quotaResult
+    ) {
+        public long totalAmount() {
+            return sellResult.totalAmount();
+        }
+
+        public int itemCount() {
+            return sellResult.itemCount();
+        }
+
+        public long quota() {
+            return quotaResult.quota();
+        }
+
+        public boolean quotaAchieved() {
+            return quotaResult.achieved();
+        }
+
+        public int remainingMisses() {
+            return quotaResult.progress().remainingMisses();
+        }
+    }
+
+    public boolean endSession(GameSession session) {
+        if (!Bukkit.isPrimaryThread()) {
+            try {
+                return Bukkit.getScheduler().callSyncMethod(plugin, () -> endSession(session)).get();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return false;
+            } catch (ExecutionException ex) {
+                plugin.getLogger().severe("Failed to end session: " + ex.getCause().getMessage());
+                return false;
+            }
+        }
+
+        if (!sessionsById.containsKey(session.sessionId())) {
+            return false;
+        }
+
+        session.setState(SessionState.CLOSING);
+        UUID worldId = session.world().getUID();
+        File worldFolder = session.world().getWorldFolder();
+        List<UUID> onlineMembers = List.copyOf(session.onlineMembers());
+
+        cancelMobTask(session);
+        cancelIdleTimeout(session);
+        plugin.roundTimeService().endRound(session);
+        plugin.journeyDisplayService().clearSession(session.sessionId());
+        plugin.portalService().clearRoundPortals(session);
+        plugin.bossBattleService().clearBossBattle(session);
+        evacuatePlayers(session);
+        restoreOnlineMembers(session);
+        ExitReason sessionExitReason = shuttingDown ? ExitReason.PLUGIN_DISABLE : ExitReason.SESSION_END;
+        for (UUID playerId : onlineMembers) {
+            plugin.statisticsService().recordSessionExit(session.runId(), playerId, sessionExitReason);
+        }
+
+        if (!session.world().getPlayers().isEmpty()) {
+            plugin.getLogger().warning("Session world still has players after evacuation: " + session.world().getName());
+        }
+
+        if (!Bukkit.unloadWorld(session.world(), false)) {
+            plugin.getLogger().severe("Failed to unload session world: " + session.world().getName());
+            return false;
+        }
+
+        sessionWorldService.deleteWorldFolder(worldFolder.toPath(), session.world().getName());
+        sessionsById.remove(session.sessionId());
+        sessionsByWorld.remove(worldId);
+        clearPlayerMappings(session.sessionId());
+        return true;
+    }
+
+    public boolean isSessionWorldEntryAllowed(Player player, World destinationWorld) {
+        GameSession targetSession = sessionsByWorld.get(destinationWorld.getUID());
+        return targetSession == null
+                || (targetSession.state() != SessionState.CLOSING && targetSession.isMember(player.getUniqueId()));
+    }
+
+    public Location fallbackLocation(GameSession excludedSession) {
+        for (World world : Bukkit.getWorlds()) {
+            if (excludedSession != null && world.getUID().equals(excludedSession.world().getUID())) {
+                continue;
+            }
+            if (sessionForWorld(world).isPresent()) {
+                continue;
+            }
+            return world.getSpawnLocation().clone();
+        }
+        for (World world : Bukkit.getWorlds()) {
+            if (excludedSession == null || !world.getUID().equals(excludedSession.world().getUID())) {
+                return world.getSpawnLocation().clone();
+            }
+        }
+        return null;
+    }
+
+    public void handlePlayerWorldChange(Player player, Location from, Location to) {
+        World sourceWorld = from.getWorld();
+        World destinationWorld = to.getWorld();
+        GameSession sourceSession = sourceWorld == null ? null : sessionsByWorld.get(sourceWorld.getUID());
+        GameSession targetSession = destinationWorld == null ? null : sessionsByWorld.get(destinationWorld.getUID());
+
+        if (sourceSession == null && targetSession == null) {
+            return;
+        }
+        if (sourceSession != null && targetSession != null && sourceSession.world().getUID().equals(targetSession.world().getUID())) {
+            return;
+        }
+
+        if (targetSession != null) {
+            if (!targetSession.isMember(player.getUniqueId()) || targetSession.state() == SessionState.CLOSING) {
+                return;
+            }
+            capturePlayerJoin(player, from, targetSession);
+            initializeSessionPlayerState(player);
+            if (targetSession.state() == SessionState.IN_ROUND && !targetSession.alivePlayers().contains(player.getUniqueId())) {
+                targetSession.markPendingNextRound(player.getUniqueId());
+                makeRoundSpectatorAtHome(targetSession, player);
+            }
+            return;
+        }
+
+        restorePlayerAttributes(player);
+        restoreGameMode(player);
+        restorePlayerVitals(player);
+    }
+
+    public void handlePlayerJoin(Player player) {
+        GameSession session = sessionsByWorld.get(player.getWorld().getUID());
+        if (session == null) {
+            GameSession associatedSession = sessionForPlayer(player.getUniqueId()).orElse(null);
+            if (associatedSession != null) {
+                associatedSession.markOnline(player.getUniqueId());
+                cancelIdleTimeout(associatedSession);
+                plugin.statisticsService().recordSessionJoin(associatedSession.runId(), player);
+                if (associatedSession.state() == SessionState.IN_ROUND) {
+                    associatedSession.markPendingNextRound(player.getUniqueId());
+                    makeRoundSpectatorAtHome(associatedSession, player);
+                } else {
+                    restoreGameMode(player);
+                    initializeSessionPlayerState(player);
+                    player.teleport(associatedSession.spawnLocation());
+                }
+            }
+            return;
+        }
+
+        if (!session.isMember(player.getUniqueId()) || session.state() == SessionState.CLOSING) {
+            Location fallback = fallbackLocation(session);
+            if (fallback != null) {
+                player.teleport(fallback);
+            } else {
+                player.kickPlayer(plugin.messages().prefix() + m("session.kick-not-member", "&cこのセッションワールドには入れません。"));
+            }
+            return;
+        }
+
+        playerToSessionId.put(player.getUniqueId(), session.sessionId());
+        session.markOnline(player.getUniqueId());
+        cancelIdleTimeout(session);
+        plugin.statisticsService().recordSessionJoin(session.runId(), player);
+        initializeSessionPlayerState(player);
+        if (session.state() == SessionState.IN_ROUND && !session.alivePlayers().contains(player.getUniqueId())) {
+            session.markPendingNextRound(player.getUniqueId());
+            makeRoundSpectatorAtHome(session, player);
+        } else if (session.state() == SessionState.LOBBY) {
+            restoreGameMode(player);
+        }
+    }
+
+    public void handlePlayerQuit(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null) {
+            return;
+        }
+
+        boolean wasAlive = session.alivePlayers().contains(player.getUniqueId());
+        plugin.statisticsService().recordSessionExit(session.runId(), player.getUniqueId(), ExitReason.DISCONNECT);
+        session.markOffline(player.getUniqueId());
+        restorePlayerAttributes(player);
+        restoreGameMode(player);
+        restorePlayerVitals(player);
+        if (wasAlive) {
+            session.markDead(player.getUniqueId());
+            broadcastSessionMessage(session, m("session.member-disconnected", "&c{player} が探索中に切断したため、今日は脱落になります。", "player", player.getName()));
+            updateRoundAfterAliveChange(session);
+        }
+        scheduleIdleTimeoutIfNeeded(session);
+    }
+
+    public void handlePlayerDeath(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null || session.state() != SessionState.IN_ROUND) {
+            return;
+        }
+        if (session.isBossBattleActive()) {
+            session.markDead(player.getUniqueId());
+            session.recordBossDeathLocation(player.getUniqueId(), player.getLocation());
+            sendTitle(player, m("session.title.down", "&cダウン"), m("session.subtitle.boss-revive", "&7味方が近くでスニークすると蘇生できる"), 10, 70, 20);
+            sendMessage(player, m("session.boss-down", "&cYou are down in the boss battle. An alive ally can hold sneak at your death location to revive you."));
+            broadcastSessionMessage(session, m("session.member-down", "&c{player} went down. Alive: {alive}", "player", player.getName(), "alive", session.alivePlayers().size()));
+            updateRoundAfterAliveChange(session);
+            return;
+        }
+        boolean wasAlive = session.alivePlayers().contains(player.getUniqueId());
+        session.markDead(player.getUniqueId());
+        if (wasAlive) {
+            plugin.statisticsService().recordDeath(
+                    session.runId(),
+                    player,
+                    stableEventId(session, "death", player.getUniqueId())
+            );
+        }
+        session.markPendingNextRound(player.getUniqueId());
+        if (session.alivePlayers().isEmpty()) {
+            updateRoundAfterAliveChange(session);
+            return;
+        }
+        sendTitle(player, m("session.title.down", "&cダウン"), m("session.subtitle.spectating-next-round", "&7翌日まで観戦"), 10, 70, 20);
+        sendMessage(player, m("session.out-this-round", "&cYou are out for this round. You will return at the start of the next round."));
+        broadcastSessionMessage(session, m("session.member-died", "&c{player} died. Alive: {alive}", "player", player.getName(), "alive", session.alivePlayers().size()));
+        updateRoundAfterAliveChange(session);
+    }
+
+    public void switchSpectatorTarget(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null || session.state() != SessionState.IN_ROUND || player.getGameMode() != GameMode.SPECTATOR
+                || !session.isRoundInactivePlayer(player.getUniqueId())) {
+            return;
+        }
+        Player target = selectSpectatorTarget(session, player, true);
+        if (target == null) {
+            sendMessage(player, m("session.no-spectator-target", "&eNo alive players are available to spectate."));
+            return;
+        }
+        player.setSpectatorTarget(target);
+        sendMessage(player, m("session.now-spectating", "&eNow spectating {player}.", "player", target.getName()));
+    }
+
+    public void ensureSpectatorTarget(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null || session.state() != SessionState.IN_ROUND || !session.isRoundInactivePlayer(player.getUniqueId())) {
+            return;
+        }
+        if (player.getGameMode() != GameMode.SPECTATOR) {
+            return;
+        }
+        Player current = player.getSpectatorTarget() instanceof Player target ? target : null;
+        if (current != null && session.alivePlayers().contains(current.getUniqueId()) && current.isOnline()) {
+            return;
+        }
+        Player target = selectSpectatorTarget(session, player, false);
+        if (target != null) {
+            player.setSpectatorTarget(target);
+        }
+    }
+
+    public void handlePlayerRespawn(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null) {
+            return;
+        }
+        if (session.state() == SessionState.GAME_OVER) {
+            Bukkit.getScheduler().runTask(plugin, () -> restoreGameOverPlayerAtHome(session, player));
+            return;
+        }
+        if (session.isBossBattleActive() && session.state() == SessionState.IN_ROUND && session.deadPlayers().contains(player.getUniqueId())) {
+            Bukkit.getScheduler().runTask(plugin, () -> makeBossSpectatorAtDeathLocation(session, player));
+            return;
+        }
+        if (session.state() != SessionState.IN_ROUND || session.alivePlayers().contains(player.getUniqueId())) {
+            return;
+        }
+        session.markPendingNextRound(player.getUniqueId());
+        Bukkit.getScheduler().runTask(plugin, () -> makeRoundSpectatorAtHome(session, player));
+    }
+
+    public Location respawnLocationFor(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null) {
+            return null;
+        }
+        if (session.state() == SessionState.GAME_OVER) {
+            return session.spawnLocation();
+        }
+        if (session.isBossBattleActive() && session.state() == SessionState.IN_ROUND && session.deadPlayers().contains(player.getUniqueId())) {
+            Location deathLocation = session.bossDeathLocation(player.getUniqueId());
+            return deathLocation == null ? session.activeBossDestination() : deathLocation;
+        }
+        if (session.state() != SessionState.IN_ROUND || session.alivePlayers().contains(player.getUniqueId())) {
+            return null;
+        }
+        return session.spawnLocation();
+    }
+
+    public int resolveDepth(World world, Location location) {
+        GameSession session = sessionsByWorld.get(world.getUID());
+        return session == null ? 0 : session.resolveDepth(location);
+    }
+
+    public void shutdown() {
+        shuttingDown = true;
+        for (GameSession session : new ArrayList<>(sessionsById.values())) {
+            endSession(session);
+        }
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            restorePlayerAttributes(player);
+            restoreGameMode(player);
+            restorePlayerVitals(player);
+        }
+    }
+
+    private void registerSession(GameSession session) {
+        sessionsById.put(session.sessionId(), session);
+        sessionsByWorld.put(session.world().getUID(), session);
+    }
+
+    private void unregisterSession(GameSession session) {
+        for (UUID playerId : session.members()) {
+            spectatorTargetIndexes.remove(playerId);
+        }
+        sessionsById.remove(session.sessionId());
+        sessionsByWorld.remove(session.world().getUID());
+        clearPlayerMappings(session.sessionId());
+    }
+
+    private void addPlayerToSession(GameSession session, Player player, Location returnLocation) {
+        UUID playerId = player.getUniqueId();
+        session.addMember(playerId);
+        session.markOnline(playerId);
+        if (session.savedLocation(playerId) == null) {
+            session.saveLocation(playerId, returnLocation);
+        }
+        playerToSessionId.put(playerId, session.sessionId());
+    }
+
+    private void removePlayerFromSession(GameSession session, UUID playerId) {
+        session.removeMember(playerId);
+        playerToSessionId.remove(playerId);
+    }
+
+    private void capturePlayerJoin(Player player, Location previousLocation, GameSession targetSession) {
+        UUID playerId = player.getUniqueId();
+        if (targetSession.savedLocation(playerId) == null && previousLocation.getWorld() != null
+                && !previousLocation.getWorld().getUID().equals(targetSession.world().getUID())) {
+            targetSession.saveLocation(playerId, previousLocation);
+        }
+        playerToSessionId.put(playerId, targetSession.sessionId());
+        targetSession.markOnline(playerId);
+        cancelIdleTimeout(targetSession);
+    }
+
+    private boolean canChangeMembership(GameSession session) {
+        return session.state() != SessionState.IN_ROUND && session.state() != SessionState.CLOSING;
+    }
+
+    private boolean canJoinSession(GameSession session) {
+        return session.state() != SessionState.CLOSING
+                && session.state() != SessionState.GAME_OVER
+                && session.roundState() != RoundState.PREPARING
+                && session.roundState() != RoundState.ENDING;
+    }
+
+    private int validateMaxPlayers(int requestedMaxPlayers) {
+        int maxAllowed = plugin.settings().sessions().maxMaxPlayers();
+        if (requestedMaxPlayers > maxAllowed) {
+            throw new IllegalArgumentException(m("session.error.max-players", "&c最大人数は {max} 以下にしてください。", "max", maxAllowed));
+        }
+        return Math.max(1, requestedMaxPlayers);
+    }
+
+    private IntVector3 allocateDungeonOrigin(GameSession session) {
+        int roundIndex = Math.max(1, session.currentRound());
+        int x = session.homeArea().maxX()
+                + plugin.settings().dungeon().baseDistanceFromHome()
+                + ((roundIndex - 1) * plugin.settings().dungeon().roundSpacing());
+        return new IntVector3(x, plugin.settings().generation().origin().y(), session.homeArea().minZ());
+    }
+
+    private BlockBox resolveDungeonBounds(List<PlacedPiece> placedPieces, IntVector3 origin) {
+        if (placedPieces.isEmpty()) {
+            return new BlockBox(origin, origin);
+        }
+
+        BlockBox bounds = placedPieces.get(0).worldBounds();
+        int minX = bounds.minX();
+        int minY = bounds.minY();
+        int minZ = bounds.minZ();
+        int maxX = bounds.maxX();
+        int maxY = bounds.maxY();
+        int maxZ = bounds.maxZ();
+        for (int index = 1; index < placedPieces.size(); index++) {
+            BlockBox next = placedPieces.get(index).worldBounds();
+            minX = Math.min(minX, next.minX());
+            minY = Math.min(minY, next.minY());
+            minZ = Math.min(minZ, next.minZ());
+            maxX = Math.max(maxX, next.maxX());
+            maxY = Math.max(maxY, next.maxY());
+            maxZ = Math.max(maxZ, next.maxZ());
+        }
+        return new BlockBox(new IntVector3(minX, minY, minZ), new IntVector3(maxX, maxY, maxZ));
+    }
+
+    private boolean isInHomeArea(GameSession session, Location location) {
+        return location.getWorld() != null
+                && location.getWorld().getUID().equals(session.world().getUID())
+                && session.homeArea().contains(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+    }
+
+    private void moveOnlineMembersHome(GameSession session) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null) {
+                continue;
+            }
+            if (player.isSleeping()) {
+                player.wakeup(false);
+            }
+            setRoundSurvival(player);
+            if (player.isDead()) {
+                continue;
+            }
+            initializeSessionPlayerState(player);
+            player.teleport(session.spawnLocation());
+        }
+    }
+
+    private void updateRoundAfterAliveChange(GameSession session) {
+        if (session.state() != SessionState.IN_ROUND || !session.alivePlayers().isEmpty()) {
+            return;
+        }
+
+        moveOnlineMembersHome(session);
+        clearOnlineMemberInventories(session);
+        plugin.portalService().clearRoundPortals(session);
+        plugin.roundTimeService().endRound(session);
+        if (session.isBossBattleActive()) {
+            plugin.bossBattleService().clearBossBattle(session);
+        }
+        session.setRoundState(RoundState.ENDED);
+        session.setState(SessionState.GAME_OVER);
+        announceGameOver(session, m("game-over.reason.all-out", "All players are out."));
+    }
+
+    private void setSpectator(Player player) {
+        playerGameModeSnapshots.computeIfAbsent(player.getUniqueId(), ignored -> player.getGameMode());
+        player.setGameMode(GameMode.SPECTATOR);
+    }
+
+    private void restoreGameMode(Player player) {
+        GameMode gameMode = playerGameModeSnapshots.remove(player.getUniqueId());
+        SpectatorItemSupport.remove(plugin, player);
+        spectatorTargetIndexes.remove(player.getUniqueId());
+        if (player.getGameMode() == GameMode.SPECTATOR) {
+            player.setSpectatorTarget(null);
+        }
+        if (gameMode != null) {
+            player.setGameMode(gameMode);
+        }
+    }
+
+    private void makeRoundSpectatorAtHome(GameSession session, Player player) {
+        initializeSessionPlayerState(player);
+        setSpectator(player);
+        Player target = selectSpectatorTarget(session, player, false);
+        if (target == null) {
+            player.teleport(session.spawnLocation());
+            sendMessage(player, m("session.spectating-home-no-target", "&eYou are spectating at home. No alive players are available."));
+        } else {
+            player.setSpectatorTarget(target);
+            sendMessage(player, m("session.spectating-target", "&eYou are spectating {player}. Sneak to switch targets.", "player", target.getName()));
+        }
+    }
+
+    private void makeBossSpectatorAtDeathLocation(GameSession session, Player player) {
+        initializeSessionPlayerState(player);
+        setSpectator(player);
+        Location deathLocation = session.bossDeathLocation(player.getUniqueId());
+        if (deathLocation != null) {
+            player.teleport(deathLocation);
+        }
+        Player target = selectSpectatorTarget(session, player, false);
+        if (target != null) {
+            player.setSpectatorTarget(target);
+            sendMessage(player, m("session.boss-spectating-target", "&eYou are spectating {player}. Sneak to switch targets. An ally can revive you at your death location.", "player", target.getName()));
+        } else {
+            sendMessage(player, m("session.boss-spectating-death-location", "&eYou are spectating at your death location."));
+        }
+    }
+
+    private void restoreGameOverPlayerAtHome(GameSession session, Player player) {
+        if (!session.isMember(player.getUniqueId()) || session.state() != SessionState.GAME_OVER) {
+            return;
+        }
+        setRoundSurvival(player);
+        initializeSessionPlayerState(player);
+        player.teleport(session.spawnLocation());
+        GameOverItemSupport.give(plugin, player);
+        sendMessage(player, m("session.game-over-returned-home", "&eGame over. You returned home. Leave this session before creating the next one."));
+    }
+
+    private void restoreRoundInactivePlayersForNextRound(GameSession session) {
+        java.util.Set<UUID> restoredPlayers = new java.util.HashSet<>();
+        for (UUID playerId : session.deadPlayers()) {
+            restoredPlayers.add(playerId);
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                boolean returnHome = DepartureGuard.needsHomeTeleport(
+                        player.getGameMode() == GameMode.SPECTATOR, isInHomeArea(session, player.getLocation()));
+                setRoundSurvival(player);
+                initializeSessionPlayerState(player);
+                if (returnHome) player.teleport(session.spawnLocation());
+                sendTitle(player, m("session.title.returned", "&a復帰"), m("session.subtitle.can-play-round", "&e今日から動ける"), 10, 50, 12);
+                player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.45F, 1.4F);
+            }
+        }
+        for (UUID playerId : session.pendingPlayersNextRound()) {
+            if (!restoredPlayers.add(playerId)) {
+                continue;
+            }
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                boolean returnHome = DepartureGuard.needsHomeTeleport(
+                        player.getGameMode() == GameMode.SPECTATOR, isInHomeArea(session, player.getLocation()));
+                setRoundSurvival(player);
+                initializeSessionPlayerState(player);
+                if (returnHome) player.teleport(session.spawnLocation());
+                sendTitle(player, m("session.title.returned", "&a復帰"), m("session.subtitle.can-play-round", "&e今日から動ける"), 10, 50, 12);
+                player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.45F, 1.4F);
+            }
+        }
+    }
+
+    private void initializeSessionPlayerState(Player player) {
+        applyPlayerAttributesAndParams(player);
+        AttributeInstance maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        if (maxHealth != null) {
+            try {
+                player.setHealth(maxHealth.getValue());
+            } catch (IllegalArgumentException ignored) {
+                // Dead players reject health changes until respawn. Respawn handling restores this state.
+            }
+        }
+        player.setFoodLevel(20);
+        player.setSaturation(20.0F);
+        player.setExhaustion(0.0F);
+    }
+
+    private void setRoundSurvival(Player player) {
+        playerGameModeSnapshots.computeIfAbsent(player.getUniqueId(), ignored -> player.getGameMode());
+        SpectatorItemSupport.remove(plugin, player);
+        spectatorTargetIndexes.remove(player.getUniqueId());
+        if (player.getGameMode() == GameMode.SPECTATOR) {
+            player.setSpectatorTarget(null);
+        }
+        player.setGameMode(GameMode.SURVIVAL);
+    }
+
+    private void preparePlayerForSessionEntry(Player player) {
+        clearPlayerRuntimeSnapshots(player.getUniqueId());
+        player.getInventory().clear();
+        player.getEnderChest().clear();
+        if (player.getGameMode() == GameMode.SPECTATOR) {
+            player.setGameMode(GameMode.SURVIVAL);
+        }
+        initializeSessionPlayerState(player);
+    }
+
+    private void clearOnlineMemberInventories(GameSession session) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                player.getInventory().clear();
+                player.getEnderChest().clear();
+            }
+        }
+    }
+
+    private void closeOnlineMemberInventories(GameSession session) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                player.closeInventory();
+            }
+        }
+    }
+
+    private void clearPlayerRuntimeSnapshots(UUID playerId) {
+        playerAttributeSnapshots.remove(playerId);
+        playerGameModeSnapshots.remove(playerId);
+        playerVitalsSnapshots.remove(playerId);
+    }
+
+    private void announceRoundStart(GameSession session) {
+        long quota = plugin.economyService().quotaForRound(session.currentRound());
+        broadcastTitle(
+                session,
+                m("round.title.start", "&6{round}日目", "round", session.currentRound()),
+                m("round.subtitle.quota", "&e今日のノルマ {quota}", "quota", quota),
+                10,
+                70,
+                16
+        );
+        broadcastSound(session, Sound.ENTITY_PLAYER_LEVELUP, 0.55F, 0.85F);
+        broadcastSessionMessage(session, m(
+                "round.started",
+                "&a{round}日目が始まった。ホームの出入口からダンジョンへ。",
+                "round", session.currentRound()
+        ));
+        broadcastVillagerMessage(session, m(
+                "round.quota-due-detail",
+                "&e村人: 今日のノルマは {quota} だ。納品箱に入れてくれ",
+                "quota", quota,
+                "remaining", Math.max(0, plugin.settings().economy().quota().maxConsecutiveMisses()
+                        - session.consecutiveQuotaMisses())
+        ), Sound.ENTITY_VILLAGER_AMBIENT);
+    }
+
+    private void announceRoundEnd(GameSession session, RoundEndResult result) {
+        String title = result.quotaAchieved()
+                ? m("round.title.quota-achieved", "&aノルマ達成")
+                : m("round.title.quota-missed", "&cノルマ未達");
+        String subtitle = m("round.subtitle.result", "&e納品 {amount}（ノルマ {quota}）",
+                "items", result.itemCount(), "amount", result.totalAmount(), "quota", result.quota());
+        broadcastTitle(session, title, subtitle, 10, 70, 20);
+        if (result.quotaAchieved()) {
+            broadcastSound(session, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.7F, 1.15F);
+        }
+        broadcastSessionMessage(session, m(
+                "round.ended-summary",
+                "&e{round}日目終了。納品 {items}個 / {amount} / ノルマ {quota} / 共有資金 {balance}",
+                "round", session.currentRound(),
+                "items", result.itemCount(),
+                "amount", result.totalAmount(),
+                "quota", result.quota(),
+                "balance", session.sharedBalance()
+        ));
+        if (result.quotaAchieved()) {
+            broadcastVillagerMessage(session, m(
+                    "round.quota-improved",
+                    "&a村人: 助かった。怒りも、少し収まったな"
+            ), Sound.ENTITY_VILLAGER_CELEBRATE);
+        } else if (result.remainingMisses() == 0) {
+            broadcastVillagerMessage(session, m(
+                    "round.quota-missed-final",
+                    "&4村人: もう我慢ならん。ここまでだ"
+            ), Sound.ENTITY_VILLAGER_NO);
+        } else {
+            broadcastVillagerMessage(session, m(
+                    "round.quota-missed-angry",
+                    "&c村人: 足りないぞ。次は持ってこい  &7ゲームオーバーまで残り {remaining}回",
+                    "remaining", result.remainingMisses()
+            ), Sound.ENTITY_VILLAGER_NO);
+            int warningAt = plugin.settings().economy().quota().warningRemaining();
+            if (result.remainingMisses() > 0 && result.remainingMisses() <= warningAt) {
+                broadcastVillagerMessage(session, m(
+                        "round.quota-warning",
+                        "&4村人: 次も足りなければ、ここまでだ"
+                ), Sound.ENTITY_VILLAGER_NO);
+                broadcastSound(session, Sound.ENTITY_WITHER_SPAWN, 0.35F, 1.4F);
+            }
+        }
+    }
+
+    private void announceGameOver(GameSession session, String reason) {
+        plugin.statisticsService().recordGameOver(session.runId());
+        giveGameOverItems(session);
+        launchGameOverFireworks(session);
+        broadcastTitle(
+                session,
+                m("game-over.title", "&4ゲームオーバー"),
+                m("game-over.subtitle", "&c{reason}  &7{round}日目まで", "reason", reason, "round", session.currentRound()),
+                10,
+                100,
+                30
+        );
+        broadcastSound(session, Sound.ENTITY_WITHER_DEATH, 0.45F, 0.75F);
+        broadcastSessionMessage(session, m("game-over.reason-line", "&cゲームオーバー  {reason}", "reason", reason));
+        broadcastSessionMessage(session, m("game-over.reached-round", "&6到達 {round}日目", "round", session.currentRound()));
+        broadcastSessionMessage(session, m("game-over.leave", "&e手持ちの赤いベッドを右クリックで退出"));
+        broadcastSessionMessage(session, m("game-over.next-session", "&e出たあと、/azicave session create か開始メニューから次を作れる。"));
+        broadcastSessionMessage(session, m("game-over.auto-close", "&7このセッションはまもなく自動で終了する。"));
+        scheduleGameOverShutdown(session);
+    }
+
+    private void scheduleGameOverShutdown(GameSession session) {
+        if (session.idleTimeoutTask() != null) {
+            return;
+        }
+        long delayTicks = Math.max(20L, plugin.settings().sessions().idleTimeoutSeconds() * 20L);
+        BukkitTask task = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            session.setIdleTimeoutTask(null);
+            if (sessionsById.containsKey(session.sessionId()) && session.state() == SessionState.GAME_OVER) {
+                endSession(session);
+            }
+        }, delayTicks);
+        session.setIdleTimeoutTask(task);
+    }
+
+    private void launchGameOverFireworks(GameSession session) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null || !player.getWorld().getUID().equals(session.world().getUID())) {
+                continue;
+            }
+            Firework firework = player.getWorld().spawn(player.getLocation(), Firework.class);
+            FireworkMeta meta = firework.getFireworkMeta();
+            meta.addEffect(org.bukkit.FireworkEffect.builder()
+                    .with(org.bukkit.FireworkEffect.Type.BALL_LARGE)
+                    .withColor(Color.RED, Color.ORANGE)
+                    .withFade(Color.YELLOW)
+                    .trail(true)
+                    .flicker(true)
+                    .build());
+            meta.setPower(1);
+            firework.setFireworkMeta(meta);
+            Bukkit.getScheduler().runTaskLater(plugin, firework::detonate, 2L);
+        }
+    }
+
+    private void giveGameOverItems(GameSession session) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                GameOverItemSupport.give(plugin, player);
+            }
+        }
+    }
+
+    private void broadcastTitle(GameSession session, String title, String subtitle, int fadeIn, int stay, int fadeOut) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                sendTitle(player, title, subtitle, fadeIn, stay, fadeOut);
+            }
+        }
+    }
+
+    private void broadcastSound(GameSession session, Sound sound, float volume, float pitch) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                player.playSound(player.getLocation(), sound, volume, pitch);
+            }
+        }
+    }
+
+    private void broadcastSessionMessage(GameSession session, String message) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                sendMessage(player, message);
+            }
+        }
+    }
+
+    private void broadcastVillagerMessage(GameSession session, String message, Sound sound) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                sendMessage(player, message);
+                player.playSound(player.getLocation(), sound, 0.8F, 1.0F);
+            }
+        }
+    }
+
+    private void sendTitle(Player player, String title, String subtitle, int fadeIn, int stay, int fadeOut) {
+        player.sendTitle(title, subtitle, fadeIn, stay, fadeOut);
+    }
+
+    private String m(String key, String fallback, Object... replacements) {
+        return plugin.messages().format(key, fallback, replacements);
+    }
+
+    private IllegalStateException fail(String key, String fallback, Object... replacements) {
+        return new IllegalStateException(m(key, fallback, replacements));
+    }
+
+    private void sendMessage(Player player, String message) {
+        player.sendMessage(plugin.messages().prefix() + message);
+    }
+
+    private UUID stableEventId(GameSession session, String eventType, UUID playerId) {
+        String source = session.runId() + ":" + eventType + ":" + session.currentRound() + ":" + playerId;
+        return UUID.nameUUIDFromBytes(source.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void sendMessage(Player player, Component message) {
+        player.sendMessage(Component.text("[AziCave] ", NamedTextColor.GOLD).append(message));
+    }
+
+    private void sendCopyableSessionId(Player player, GameSession session) {
+        sendMessage(player, Component.text(m("session.id-label", "セッションID: "), NamedTextColor.YELLOW)
+                .append(Component.text(session.sessionId(), NamedTextColor.AQUA)
+                        .clickEvent(ClickEvent.copyToClipboard(session.sessionId())))
+                .append(Component.text(m("session.click-to-copy", " (クリックでコピー)"), NamedTextColor.GRAY)));
+    }
+
+    private Player selectSpectatorTarget(GameSession session, Player spectator, boolean advance) {
+        List<Player> candidates = session.alivePlayers().stream()
+                .map(Bukkit::getPlayer)
+                .filter(player -> player != null
+                        && player.isOnline()
+                        && !player.getUniqueId().equals(spectator.getUniqueId())
+                        && player.getWorld().getUID().equals(session.world().getUID()))
+                .sorted((left, right) -> left.getName().compareToIgnoreCase(right.getName()))
+                .toList();
+        if (candidates.isEmpty()) {
+            spectatorTargetIndexes.remove(spectator.getUniqueId());
+            return null;
+        }
+        int index = spectatorTargetIndexes.getOrDefault(spectator.getUniqueId(), 0);
+        if (advance) {
+            index++;
+        }
+        index = Math.floorMod(index, candidates.size());
+        spectatorTargetIndexes.put(spectator.getUniqueId(), index);
+        return candidates.get(index);
+    }
+
+    private void restorePlayerVitals(Player player) {
+        PlayerVitalsSnapshot snapshot = playerVitalsSnapshots.remove(player.getUniqueId());
+        AttributeInstance maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        if (snapshot != null) {
+            if (maxHealth != null) {
+                try {
+                    player.setHealth(Math.max(1.0D, Math.min(snapshot.health(), maxHealth.getValue())));
+                } catch (IllegalArgumentException ignored) {
+                    // A dead player may reject health updates until respawn; restore what we can.
+                }
+            }
+            player.setFoodLevel(snapshot.foodLevel());
+            player.setSaturation(snapshot.saturation());
+            player.setExhaustion(snapshot.exhaustion());
+            return;
+        }
+
+        if (maxHealth != null) {
+            double restoredHealth = player.isDead()
+                    ? maxHealth.getValue()
+                    : Math.max(1.0D, Math.min(player.getHealth(), maxHealth.getValue()));
+            try {
+                player.setHealth(restoredHealth);
+            } catch (IllegalArgumentException ignored) {
+                // A dead player may reject health updates until respawn; restore what we can.
+            }
+        }
+        player.setFoodLevel(20);
+        player.setSaturation(5.0F);
+        player.setExhaustion(0.0F);
+    }
+
+    private Location homeSpawn(World world) {
+        IntVector3 spawn = plugin.settings().home().spawn();
+        return new Location(world, spawn.x() + 0.5D, spawn.y(), spawn.z() + 0.5D);
+    }
+
+    private Location homeReturnSpawn(World world) {
+        IntVector3 spawn = plugin.settings().home().returnSpawn();
+        return new Location(world, spawn.x() + 0.5D, spawn.y(), spawn.z() + 0.5D);
+    }
+
+    private String allocateSessionId() {
+        String worldNamePrefix = plugin.settings().sessions().worldNamePrefix();
+        for (int attempts = 0; attempts < 16; attempts++) {
+            String id = UUID.randomUUID().toString().substring(0, 6).toLowerCase();
+            if (!sessionsById.containsKey(id) && Bukkit.getWorld(worldNamePrefix + id) == null) {
+                return id;
+            }
+        }
+        throw fail("session.error.allocate-id", "&c一意のセッションIDを割り当てできませんでした。");
+    }
+
+    private String normalizeSessionId(String sessionId) {
+        return sessionId == null ? "" : sessionId.toLowerCase(Locale.ROOT);
+    }
+
+    private void scheduleIdleTimeoutIfNeeded(GameSession session) {
+        if (!sessionsById.containsKey(session.sessionId()) || !canChangeMembership(session) || !session.onlineMembers().isEmpty()) {
+            return;
+        }
+        if (session.idleTimeoutTask() != null) {
+            return;
+        }
+
+        long delayTicks = plugin.settings().sessions().idleTimeoutSeconds() * 20L;
+        BukkitTask task = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            session.setIdleTimeoutTask(null);
+            if (sessionsById.containsKey(session.sessionId()) && canChangeMembership(session) && session.onlineMembers().isEmpty()) {
+                endSession(session);
+            }
+        }, delayTicks);
+        session.setIdleTimeoutTask(task);
+    }
+
+    private void cancelIdleTimeout(GameSession session) {
+        if (session.idleTimeoutTask() != null) {
+            session.idleTimeoutTask().cancel();
+            session.setIdleTimeoutTask(null);
+        }
+    }
+
+    private void evacuatePlayers(GameSession session) {
+        List<Player> playersInWorld = new ArrayList<>(session.world().getPlayers());
+        for (Player player : playersInWorld) {
+            Location returnLocation = resolveReturnLocation(session, player.getUniqueId());
+            boolean teleported = returnLocation != null && player.teleport(returnLocation);
+            restorePlayerAttributes(player);
+            restoreGameMode(player);
+            restorePlayerVitals(player);
+            if (!teleported) {
+                player.kickPlayer(plugin.messages().prefix() + m("session.kick-closing", "&cセッションワールドを閉じています。"));
+            }
+        }
+    }
+
+    private void restoreOnlineMembers(GameSession session) {
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                restorePlayerAttributes(player);
+                restoreGameMode(player);
+                restorePlayerVitals(player);
+            }
+        }
+    }
+
+    private Location resolveReturnLocation(GameSession session, UUID playerId) {
+        Location savedLocation = session.savedLocation(playerId);
+        if (savedLocation != null
+                && savedLocation.getWorld() != null
+                && !savedLocation.getWorld().getUID().equals(session.world().getUID())
+                && sessionForWorld(savedLocation.getWorld()).isEmpty()) {
+            return savedLocation;
+        }
+
+        return fallbackLocation(session);
+    }
+
+    private void clearPlayerMappings(String sessionId) {
+        playerToSessionId.entrySet().removeIf(entry -> sessionId.equals(entry.getValue()));
+    }
+
+    private void cancelMobTask(GameSession session) {
+        if (session.mobSpawnTask() != null) {
+            session.mobSpawnTask().cancel();
+            session.setMobSpawnTask(null);
+        }
+    }
+
+    private void applyPlayerAttributesAndParams(Player player) {
+        playerAttributeSnapshots.computeIfAbsent(player.getUniqueId(), ignored -> PlayerAttributeSnapshot.capture(player));
+        playerVitalsSnapshots.computeIfAbsent(player.getUniqueId(), ignored -> PlayerVitalsSnapshot.capture(player));
+        for (Map.Entry<Attribute, Double> entry : SESSION_ATTRIBUTE_VALUES.entrySet()) {
+            AttributeInstance attributeInstance = player.getAttribute(entry.getKey());
+            if (attributeInstance != null) {
+                attributeInstance.setBaseValue(entry.getValue());
+            }
+        }
+
+        AttributeInstance maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        if (maxHealth != null) {
+            player.setHealth(maxHealth.getValue());
+        }
+
+        player.setFoodLevel(20);
+    }
+
+    private void restorePlayerAttributes(Player player) {
+        PlayerAttributeSnapshot snapshot = playerAttributeSnapshots.remove(player.getUniqueId());
+        if (snapshot == null) {
+            return;
+        }
+
+        snapshot.restore(player);
+        AttributeInstance maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        if (maxHealth != null) {
+            player.setHealth(maxHealth.getValue());
+        }
+
+        player.setFoodLevel(20);
+    }
+
+    private record PlayerVitalsSnapshot(double health, int foodLevel, float saturation, float exhaustion) {
+        private static PlayerVitalsSnapshot capture(Player player) {
+            return new PlayerVitalsSnapshot(
+                    player.getHealth(),
+                    player.getFoodLevel(),
+                    player.getSaturation(),
+                    player.getExhaustion()
+            );
+        }
+    }
+
+    private record SessionCreationPlan(
+            UUID playerId,
+            String sessionId,
+            String worldName,
+            Path worldFolder,
+            Path templateWorldFolder,
+            int maxPlayers
+    ) {
+    }
+
+    private record PlayerAttributeSnapshot(Map<Attribute, Double> baseValues) {
+        private static PlayerAttributeSnapshot capture(Player player) {
+            Map<Attribute, Double> baseValues = new HashMap<>();
+            for (Attribute attribute : SESSION_ATTRIBUTE_VALUES.keySet()) {
+                AttributeInstance attributeInstance = player.getAttribute(attribute);
+                if (attributeInstance != null) {
+                    baseValues.put(attribute, attributeInstance.getBaseValue());
+                }
+            }
+            return new PlayerAttributeSnapshot(Map.copyOf(baseValues));
+        }
+
+        private void restore(Player player) {
+            for (Map.Entry<Attribute, Double> entry : baseValues.entrySet()) {
+                AttributeInstance attributeInstance = player.getAttribute(entry.getKey());
+                if (attributeInstance != null) {
+                    attributeInstance.setBaseValue(entry.getValue());
+                }
+            }
+        }
+    }
+}

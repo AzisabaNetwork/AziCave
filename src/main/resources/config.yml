@@ -30,8 +30,8 @@ database:
   enabled: false
   host: 127.0.0.1
   port: 3306
-  name: azirouge
-  username: azirouge
+  name: azicave
+  username: azicave
   password: "change-me"
   use-ssl: false
   maximum-pool-size: 4
@@ -80,8 +80,8 @@ sessions:
   default-max-players: 4
   max-max-players: 8
   idle-timeout-seconds: 60
-  world-name-prefix: azirouge-
-  home-template-world-path: azirouge
+  world-name-prefix: azicave-
+  home-template-world-path: azicave
   cleanup-leftover-worlds-on-startup: true
 home:
   spawn:
@@ -302,7 +302,7 @@ boss:
 enemies:
   enabled: false
   mode: reserved
-azirouge:
+azicave:
   mob-spawn-interval-seconds: 30
   mob-spawn-count-per-interval: 1
   mob-spawn-max-alive-power: 16

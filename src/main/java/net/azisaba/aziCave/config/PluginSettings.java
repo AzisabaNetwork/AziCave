@@ -1,0 +1,22 @@
+package net.azisaba.aziCave.config;
+
+public record PluginSettings(
+        GenerationSettings generation,
+        DoorSettings door,
+        boolean debugEnabled,
+        DatabaseSettings database,
+        LeaderboardSettings leaderboard,
+        SessionSettings sessions,
+        HomeSettings home,
+        DungeonSettings dungeon,
+        PortalSettings portals,
+        RoundTimingSettings roundTiming,
+        EconomySettings economy,
+        ShopSettings shop,
+        GuiSettings gui,
+        PlayerSettings player,
+        BossSettings boss,
+        AziCaveSettings azicave,
+        boolean joinIsBeta
+) {
+}

@@ -29,6 +29,7 @@ dependencies {
     implementation("org.mariadb.jdbc:mariadb-java-client:3.5.10")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
+    testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.13.4")
 }
 
@@ -39,8 +40,8 @@ tasks.named('jar') {
 tasks.named('shadowJar') {
     archiveClassifier.set('')
     mergeServiceFiles()
-    relocate 'com.zaxxer.hikari', 'net.azisaba.aziRouge.lib.hikari'
-    relocate 'org.mariadb.jdbc', 'net.azisaba.aziRouge.lib.mariadb'
+    relocate 'com.zaxxer.hikari', 'net.azisaba.aziCave.lib.hikari'
+    relocate 'org.mariadb.jdbc', 'net.azisaba.aziCave.lib.mariadb'
 }
 
 tasks.named('build') {
