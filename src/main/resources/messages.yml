@@ -297,6 +297,8 @@ round:
 game-over:
   title: "&4ゲームオーバー"
   subtitle: "&c{reason}  &7（{round}日目で終了）"
+  return-message: "&cゲームオーバー！"
+  return-link: "&a[ロビーへ戻る]"
   reason-line: "&cゲームオーバー: {reason}"
   reached-round: "&6到達記録: {round}日目"
   leave: "&e手持ちの「セッション退出」（赤いベッド）を右クリックで退出できます。"

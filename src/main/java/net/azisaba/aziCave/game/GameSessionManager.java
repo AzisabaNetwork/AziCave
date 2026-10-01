@@ -1296,6 +1296,20 @@ public final class GameSessionManager {
                 100,
                 30
         );
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (sessionsById.get(session.sessionId()) != session || session.state() != SessionState.GAME_OVER) {
+                return;
+            }
+            Component message = plugin.messages().component("game-over.return-message", "&cゲームオーバー！")
+                    .append(plugin.messages().component("game-over.return-link", "&a[ロビーへ戻る]")
+                            .clickEvent(ClickEvent.runCommand("/azicave session leave")));
+            for (UUID playerId : session.onlineMembers()) {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player != null) {
+                    sendMessage(player, message);
+                }
+            }
+        }, 100L);
         broadcastSound(session, Sound.ENTITY_WITHER_DEATH, 0.45F, 0.75F);
         broadcastSessionMessage(session, m("game-over.reason-line", "&cゲームオーバー  {reason}", "reason", reason));
         broadcastSessionMessage(session, m("game-over.reached-round", "&6到達 {round}日目", "round", session.currentRound()));
