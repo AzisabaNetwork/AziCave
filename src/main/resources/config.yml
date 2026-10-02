@@ -306,14 +306,35 @@ azicave:
   mob-spawn-interval-seconds: 30
   mob-spawn-count-per-interval: 1
   mob-spawn-max-alive-power: 16
+  # 全体上限 = 基本power × 深さ倍率 × 人数倍率（小数点以下切り捨て）。湧き数・周囲上限は変えない。
+  # 深さは現在探索中の生存プレイヤーの最深位置（入口depth=0）、人数はその探索人数。
   mob-spawn-power-scaling:
     enabled: true
     depth:
+      # min(max-multiplier, 1 + 現在の最深depth × multiplier-per-level)
       multiplier-per-level: 0.5
       max-multiplier: 3.0
     players:
+      # min(max-multiplier, 1 + (探索人数 - 1) × multiplier-per-additional-player)
       multiplier-per-additional-player: 0.5
       max-multiplier: 3.0
+  # 最も近い探索プレイヤーからの直線距離（ブロック）。有効な湧き場所がなければ見送り。
+  mob-spawn-player-distance:
+    enabled: true
+    min-distance: 8.0
+    max-distance: 32.0
+  # 湧き位置が範囲内にある各探索プレイヤーについて、新規mobを含む周囲powerを制限。
+  # 集まったプレイヤー間で上限を合算しない。移動してきたmobはこの上限で消去しない。
+  mob-spawn-nearby-limit:
+    enabled: true
+    radius: 32.0
+    max-alive-power: 8
+  # 全探索プレイヤーから離れたazicave mobのみ整理。近づくと待ち時間リセット。
+  # 探索者がいない間も整理する。1秒ごとに判定し、ドロップなしで消去する。
+  mob-spawn-despawn:
+    enabled: true
+    min-player-distance: 64.0
+    after-seconds: 60
   mob-spawn-light:
     enabled: true
     sample-attempts-per-spawn: 96

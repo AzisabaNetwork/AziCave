@@ -9,11 +9,43 @@ public record MobSpawnSettings(
         long intervalSeconds,
         int countPerInterval,
         int maxAlivePower,
+        PowerScaling powerScaling,
+        PlayerDistance playerDistance,
+        NearbyLimit nearbyLimit,
+        Despawn despawn,
         MobSpawnLightSettings light,
         Map<String, MobProfileSettings> profiles
 ) {
     public long intervalTicks() {
         return intervalSeconds * 20L;
+    }
+
+    public int scaledMaxAlivePower(int depth, int players) {
+        if (!powerScaling.enabled() || maxAlivePower <= 0) {
+            return maxAlivePower;
+        }
+        double depthMultiplier = Math.min(powerScaling.depthMaxMultiplier(),
+                1.0D + Math.max(0, depth) * powerScaling.depthPerLevel());
+        double playersMultiplier = Math.min(powerScaling.playersMaxMultiplier(),
+                1.0D + Math.max(0, players - 1) * powerScaling.playersPerAdditionalPlayer());
+        return (int) Math.min(Integer.MAX_VALUE, Math.floor(maxAlivePower * depthMultiplier * playersMultiplier));
+    }
+
+    public record PowerScaling(boolean enabled, double depthPerLevel, double depthMaxMultiplier,
+                               double playersPerAdditionalPlayer, double playersMaxMultiplier) {
+    }
+
+    public record PlayerDistance(boolean enabled, double minDistance, double maxDistance) {
+        public boolean allows(double nearestDistanceSquared) {
+            return !enabled || (nearestDistanceSquared >= minDistance * minDistance
+                    && nearestDistanceSquared <= maxDistance * maxDistance);
+        }
+    }
+
+    public record NearbyLimit(boolean enabled, double radius, int maxAlivePower) {
+    }
+
+    public record Despawn(boolean enabled, double minPlayerDistance, long afterSeconds) {
     }
 
     public MobProfileSettings profile(MobProfile profile) {

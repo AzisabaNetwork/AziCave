@@ -6,10 +6,13 @@ import net.azisaba.aziCave.config.MobSpawnLightSettings;
 import net.azisaba.aziCave.config.MobSpawnSettings;
 import net.azisaba.aziCave.config.TorchSpawnPenaltySettings;
 import net.azisaba.aziCave.game.GameSession;
+import net.azisaba.aziCave.game.RoundState;
+import net.azisaba.aziCave.game.SessionState;
 import net.azisaba.aziCave.dungeon.PlacedPiece;
 import net.azisaba.aziCave.math.BlockBox;
 import net.azisaba.aziCave.math.IntVector3;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -24,10 +27,15 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 public final class MobSpawnManager {
     private final AziCave plugin;
@@ -39,44 +47,116 @@ public final class MobSpawnManager {
     }
 
     public BukkitTask start(GameSession session) {
-        long intervalTicks = plugin.settings().azicave().mobSpawn().intervalTicks();
         return new BukkitRunnable() {
+            private final Map<UUID, Long> farSince = new HashMap<>();
+            private long elapsedTicks;
+            private long lastWaveTicks;
+
             @Override
             public void run() {
-                if (session.world().getPlayers().isEmpty()) {
-                    return;
+                elapsedTicks += 20L;
+                MobSpawnSettings settings = plugin.settings().azicave().mobSpawn();
+                List<Location> players = exploringPlayers(session);
+                List<LivingEntity> mobs = new ArrayList<>(session.world().getLivingEntities().stream()
+                        .filter(entity -> entity.isValid() && !entity.isDead()
+                                && entity.getScoreboardTags().contains(MobProfile.MOB_TAG))
+                        .toList());
+                despawnDistantMobs(mobs, players, settings.despawn(), farSince, elapsedTicks);
+                if (elapsedTicks - lastWaveTicks >= settings.intervalTicks()) {
+                    lastWaveTicks = elapsedTicks;
+                    if (!players.isEmpty()) {
+                        spawnWave(session, players, mobs, settings);
+                    }
                 }
-                spawnWave(session);
             }
-        }.runTaskTimer(plugin, intervalTicks, intervalTicks);
+        }.runTaskTimer(plugin, 20L, 20L);
     }
 
-    private void spawnWave(GameSession session) {
+    static List<Location> exploringPlayers(GameSession session) {
+        if (session.state() != SessionState.IN_ROUND || session.roundState() != RoundState.ACTIVE
+                || session.isBossBattleActive()) {
+            return List.of();
+        }
+        return session.world().getPlayers().stream()
+                .filter(player -> session.alivePlayers().contains(player.getUniqueId())
+                        && !player.isDead() && player.getGameMode() != GameMode.SPECTATOR)
+                .map(player -> player.getLocation())
+                .filter(location -> !session.homeArea().contains(location.getBlockX(), location.getBlockY(), location.getBlockZ())
+                        && session.resolveContainingDepth(location).isPresent())
+                .toList();
+    }
+
+    static double nearestDistanceSquared(Location location, List<Location> players) {
+        return players.stream().mapToDouble(location::distanceSquared).min().orElse(Double.POSITIVE_INFINITY);
+    }
+
+    static void despawnDistantMobs(List<LivingEntity> mobs, List<Location> players, MobSpawnSettings.Despawn settings,
+                                   Map<UUID, Long> farSince, long nowTicks) {
+        if (!settings.enabled()) {
+            farSince.clear();
+            return;
+        }
+        farSince.keySet().retainAll(mobs.stream().map(Entity::getUniqueId).collect(Collectors.toSet()));
+        mobs.removeIf(mob -> {
+            UUID id = mob.getUniqueId();
+            if (nearestDistanceSquared(mob.getLocation(), players) < settings.minPlayerDistance() * settings.minPlayerDistance()) {
+                farSince.remove(id);
+                return false;
+            }
+            long since = farSince.computeIfAbsent(id, ignored -> nowTicks);
+            if (nowTicks - since < settings.afterSeconds() * 20L) {
+                return false;
+            }
+            PathfindTargetRegistry.clear(mob);
+            mob.remove();
+            farSince.remove(id);
+            return true;
+        });
+    }
+
+    private void spawnWave(GameSession session, List<Location> players, List<LivingEntity> mobs, MobSpawnSettings mobSpawnSettings) {
         Random random = ThreadLocalRandom.current();
-        MobSpawnSettings mobSpawnSettings = plugin.settings().azicave().mobSpawn();
-        int maxAlivePower = mobSpawnSettings.maxAlivePower();
+        int depth = players.stream().mapToInt(session::resolveDepth).max().orElse(0);
+        int maxAlivePower = mobSpawnSettings.scaledMaxAlivePower(depth, players.size());
         if (maxAlivePower <= 0) {
             return;
         }
 
-        int alivePower = currentAlivePower(session.world(), mobSpawnSettings);
+        int alivePower = currentAlivePower(mobs, mobSpawnSettings);
         if (alivePower >= maxAlivePower) {
             return;
         }
 
-        for (int index = 0; index < mobSpawnSettings.countPerInterval(); index++) {
-            Map<MobProfile, Integer> aliveCounts = currentAliveCounts(session.world());
-            int remainingPower = maxAlivePower - alivePower;
-            MobProfile profile = mobSpawnSettings.selectRandomProfile(random, remainingPower, aliveCounts);
-            if (profile == null) {
-                break;
-            }
-            MobProfileSettings profileSettings = mobSpawnSettings.profile(profile);
+        Map<MobProfile, Integer> aliveCounts = new EnumMap<>(MobProfile.class);
+        for (LivingEntity mob : mobs) {
+            MobProfile profile = MobProfile.fromEntity(mob);
+            if (profile != null) aliveCounts.merge(profile, 1, Integer::sum);
+        }
+        Map<Location, Integer> nearbyPowers = new LinkedHashMap<>();
+        double radiusSquared = mobSpawnSettings.nearbyLimit().radius() * mobSpawnSettings.nearbyLimit().radius();
+        for (Location player : players) {
+            nearbyPowers.put(player, currentAlivePower(mobs.stream()
+                    .filter(mob -> player.distanceSquared(mob.getLocation()) <= radiusSquared).toList(), mobSpawnSettings));
+        }
+        List<PlacedPiece> rooms = session.placedPieces().stream()
+                .filter(piece -> !mobSpawnSettings.playerDistance().enabled()
+                        || isRoomNearPlayers(piece.worldBounds(), players, mobSpawnSettings.playerDistance().maxDistance()))
+                .toList();
 
-            Location spawnLocation = findSpawnLocation(session, random);
+        for (int index = 0; index < mobSpawnSettings.countPerInterval() && alivePower < maxAlivePower; index++) {
+            int globalRemainingPower = maxAlivePower - alivePower;
+            Predicate<Location> allowed = location -> mobSpawnSettings.playerDistance().allows(nearestDistanceSquared(location, players))
+                    && remainingSpawnPower(location, nearbyPowers, mobSpawnSettings.nearbyLimit(), globalRemainingPower) > 0;
+            Location spawnLocation = findSpawnLocation(session.world(), rooms, random, mobSpawnSettings.light(), allowed);
             if (spawnLocation == null) {
                 continue;
             }
+            int remainingPower = remainingSpawnPower(spawnLocation, nearbyPowers, mobSpawnSettings.nearbyLimit(), globalRemainingPower);
+            MobProfile profile = mobSpawnSettings.selectRandomProfile(random, remainingPower, aliveCounts);
+            if (profile == null) {
+                continue;
+            }
+            MobProfileSettings profileSettings = mobSpawnSettings.profile(profile);
 
             Entity entity = session.world().spawnEntity(spawnLocation, profile.entityType());
             if (entity instanceof LivingEntity livingEntity) {
@@ -91,52 +171,58 @@ public final class MobSpawnManager {
                 mobAiManager.track(livingEntity, profile);
                 alivePower += profileSettings.power();
                 aliveCounts.merge(profile, 1, Integer::sum);
+                nearbyPowers.replaceAll((player, power) -> player.distanceSquared(spawnLocation) <= radiusSquared
+                        ? (int) Math.min(Integer.MAX_VALUE, (long) power + profileSettings.power()) : power);
             } else {
                 entity.remove();
             }
         }
     }
 
-    private int currentAlivePower(World world, MobSpawnSettings settings) {
-        int totalPower = 0;
-        for (LivingEntity entity : world.getLivingEntities()) {
-            if (!entity.getScoreboardTags().contains(MobProfile.MOB_TAG)) {
-                continue;
-            }
-
+    private int currentAlivePower(List<LivingEntity> mobs, MobSpawnSettings settings) {
+        long totalPower = 0;
+        for (LivingEntity entity : mobs) {
             MobProfile profile = MobProfile.fromEntity(entity);
             if (profile != null) {
                 totalPower += settings.profile(profile).power();
             }
         }
-        return totalPower;
+        return (int) Math.min(Integer.MAX_VALUE, totalPower);
     }
 
-    private Map<MobProfile, Integer> currentAliveCounts(World world) {
-        Map<MobProfile, Integer> counts = new EnumMap<>(MobProfile.class);
-        for (LivingEntity entity : world.getLivingEntities()) {
-            if (!entity.getScoreboardTags().contains(MobProfile.MOB_TAG)) {
-                continue;
-            }
-
-            MobProfile profile = MobProfile.fromEntity(entity);
-            if (profile != null) {
-                counts.merge(profile, 1, Integer::sum);
+    static int remainingSpawnPower(Location location, Map<Location, Integer> nearbyPowers,
+                                   MobSpawnSettings.NearbyLimit settings, int globalRemainingPower) {
+        int remaining = globalRemainingPower;
+        if (settings.enabled()) {
+            for (Map.Entry<Location, Integer> entry : nearbyPowers.entrySet()) {
+                if (entry.getKey().distanceSquared(location) <= settings.radius() * settings.radius()) {
+                    remaining = Math.min(remaining, settings.maxAlivePower() - entry.getValue());
+                }
             }
         }
-        return counts;
+        return Math.max(0, remaining);
     }
 
-    private Location findSpawnLocation(GameSession session, Random random) {
-        if (session.placedPieces().isEmpty()) {
+    static boolean isRoomNearPlayers(BlockBox bounds, List<Location> players, double maxDistance) {
+        for (Location player : players) {
+            double dx = player.getX() - Math.clamp(player.getX(), bounds.minX(), bounds.maxX() + 1.0D);
+            double dy = player.getY() - Math.clamp(player.getY(), bounds.minY(), bounds.maxY() + 1.0D);
+            double dz = player.getZ() - Math.clamp(player.getZ(), bounds.minZ(), bounds.maxZ() + 1.0D);
+            if (dx * dx + dy * dy + dz * dz <= maxDistance * maxDistance) return true;
+        }
+        return false;
+    }
+
+    private Location findSpawnLocation(World world, List<PlacedPiece> rooms, Random random,
+                                       MobSpawnLightSettings lightSettings, Predicate<Location> allowed) {
+        if (rooms.isEmpty()) {
             return null;
         }
 
-        MobSpawnLightSettings lightSettings = plugin.settings().azicave().mobSpawn().light();
         if (!lightSettings.enabled()) {
-            for (int attempt = 0; attempt < Math.max(8, session.placedPieces().size() * 2); attempt++) {
-                PlacedPiece piece = session.randomRoom(random);
-                Location location = findSpawnLocation(session.world(), piece.worldBounds(), random);
+            for (int attempt = 0; attempt < Math.max(8, rooms.size() * 2); attempt++) {
+                PlacedPiece piece = rooms.get(random.nextInt(rooms.size()));
+                Location location = findSpawnLocation(world, piece.worldBounds(), random, allowed);
                 if (location != null) {
                     return location;
                 }
@@ -146,10 +232,10 @@ public final class MobSpawnManager {
 
         List<SpawnCandidate> candidates = new ArrayList<>();
         double totalWeight = 0.0D;
-        int attempts = Math.max(lightSettings.sampleAttemptsPerSpawn(), session.placedPieces().size() * 2);
+        int attempts = Math.max(lightSettings.sampleAttemptsPerSpawn(), rooms.size() * 2);
         for (int attempt = 0; attempt < attempts; attempt++) {
-            PlacedPiece piece = session.randomRoom(random);
-            Location location = findSpawnLocation(session.world(), piece.worldBounds(), random);
+            PlacedPiece piece = rooms.get(random.nextInt(rooms.size()));
+            Location location = findSpawnLocation(world, piece.worldBounds(), random, allowed);
             if (location == null) {
                 continue;
             }
@@ -183,7 +269,7 @@ public final class MobSpawnManager {
         return targets;
     }
 
-    private Location findSpawnLocation(World world, BlockBox bounds, Random random) {
+    private Location findSpawnLocation(World world, BlockBox bounds, Random random, Predicate<Location> allowed) {
         int minX = interiorMin(bounds.minX(), bounds.maxX());
         int maxX = interiorMax(bounds.minX(), bounds.maxX());
         int minZ = interiorMin(bounds.minZ(), bounds.maxZ());
@@ -195,11 +281,15 @@ public final class MobSpawnManager {
             int x = randomBetween(minX, maxX, random);
             int z = randomBetween(minZ, maxZ, random);
             for (int y = minY; y <= maxY; y++) {
+                Location location = new Location(world, x + 0.5D, y, z + 0.5D);
+                if (!allowed.test(location)) {
+                    continue;
+                }
                 Block feet = world.getBlockAt(x, y, z);
                 if (!isValidSpawnBlock(feet)) {
                     continue;
                 }
-                return new Location(world, x + 0.5D, y, z + 0.5D);
+                return location;
             }
         }
         return null;

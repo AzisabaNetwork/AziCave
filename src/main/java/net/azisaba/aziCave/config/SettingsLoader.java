@@ -572,13 +572,41 @@ public final class SettingsLoader {
     }
 
     private static MobSpawnSettings loadMobSpawnSettings(FileConfiguration config) {
+        double minDistance = spawnSettingNumber(config, "player-distance.min-distance", 8.0D);
         return new MobSpawnSettings(
-                Math.max(1L, config.getLong("azicave.mob-spawn-interval-seconds", 30L)),
-                Math.max(1, config.getInt("azicave.mob-spawn-count-per-interval", 3)),
-                Math.max(0, config.getInt("azicave.mob-spawn-max-alive-power", 48)),
+                Math.clamp(config.getLong("azicave.mob-spawn-interval-seconds", 30L), 1L, Long.MAX_VALUE / 20L),
+                Math.max(1, config.getInt("azicave.mob-spawn-count-per-interval", 1)),
+                Math.max(0, config.getInt("azicave.mob-spawn-max-alive-power", 16)),
+                new MobSpawnSettings.PowerScaling(
+                        config.getBoolean("azicave.mob-spawn-power-scaling.enabled", true),
+                        spawnSettingNumber(config, "power-scaling.depth.multiplier-per-level", 0.5D),
+                        Math.max(1.0D, spawnSettingNumber(config, "power-scaling.depth.max-multiplier", 3.0D)),
+                        spawnSettingNumber(config, "power-scaling.players.multiplier-per-additional-player", 0.5D),
+                        Math.max(1.0D, spawnSettingNumber(config, "power-scaling.players.max-multiplier", 3.0D))
+                ),
+                new MobSpawnSettings.PlayerDistance(
+                        config.getBoolean("azicave.mob-spawn-player-distance.enabled", true),
+                        minDistance,
+                        Math.max(minDistance, spawnSettingNumber(config, "player-distance.max-distance", 32.0D))
+                ),
+                new MobSpawnSettings.NearbyLimit(
+                        config.getBoolean("azicave.mob-spawn-nearby-limit.enabled", true),
+                        spawnSettingNumber(config, "nearby-limit.radius", 32.0D),
+                        Math.max(0, config.getInt("azicave.mob-spawn-nearby-limit.max-alive-power", 8))
+                ),
+                new MobSpawnSettings.Despawn(
+                        config.getBoolean("azicave.mob-spawn-despawn.enabled", true),
+                        spawnSettingNumber(config, "despawn.min-player-distance", 64.0D),
+                        Math.clamp(config.getLong("azicave.mob-spawn-despawn.after-seconds", 60L), 0L, Long.MAX_VALUE / 20L)
+                ),
                 loadMobSpawnLightSettings(config),
                 loadMobProfiles(config.getConfigurationSection("azicave.mobs"))
         );
+    }
+
+    private static double spawnSettingNumber(FileConfiguration config, String key, double fallback) {
+        double value = config.getDouble("azicave.mob-spawn-" + key, fallback);
+        return Double.isFinite(value) ? Math.clamp(value, 0.0D, Math.sqrt(Double.MAX_VALUE)) : fallback;
     }
 
     private static MobSpawnLightSettings loadMobSpawnLightSettings(FileConfiguration config) {
