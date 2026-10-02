@@ -65,6 +65,7 @@ public final class GameSessionManager {
     private final Map<UUID, GameMode> playerGameModeSnapshots = new HashMap<>();
     private final Map<UUID, PlayerVitalsSnapshot> playerVitalsSnapshots = new HashMap<>();
     private final Map<UUID, Integer> spectatorTargetIndexes = new HashMap<>();
+    private final Map<UUID, ObserverSnapshot> observers = new HashMap<>();
     private final Set<UUID> pendingSessionCreations = new HashSet<>();
     private boolean shuttingDown;
 
@@ -251,6 +252,7 @@ public final class GameSessionManager {
     }
 
     private SessionCreationPlan prepareSessionCreation(Player player, int requestedMaxPlayers) {
+        requireNotObserving(player);
         if (sessionForPlayer(player.getUniqueId()).isPresent()) {
             throw fail("session.error.already-in-other", "&c別のセッションに参加中です。先に退出してください。");
         }
@@ -336,6 +338,7 @@ public final class GameSessionManager {
     }
 
     public GameSession joinSession(Player player, String sessionId) {
+        requireNotObserving(player);
         GameSession session = sessionById(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException(m("session.error.not-found", "&cセッションが見つかりません: {session}", "session", sessionId)));
         if (!canJoinSession(session)) {
@@ -382,7 +385,49 @@ public final class GameSessionManager {
         return session;
     }
 
+    public GameSession spectateSession(Player player, String sessionId) {
+        if (!player.hasPermission("azicave.session.spectate")) {
+            throw fail("commands.permission.session-spectate", "&cセッションを観戦する権限がありません。");
+        }
+        if (sessionForPlayer(player.getUniqueId()).isPresent()) {
+            throw fail("session.error.already-in-other", "&cセッションに参加中です。先に退出してください。");
+        }
+        if (pendingSessionCreations.contains(player.getUniqueId())) {
+            throw fail("session.error.already-creating", "&cセッションを作成中です。");
+        }
+        GameSession session = sessionById(sessionId)
+                .orElseThrow(() -> fail("session.error.not-found", "&cセッションが見つかりません: {session}", "session", sessionId));
+        if (session.state() == SessionState.CLOSING) {
+            throw fail("session.error.inactive", "&cセッションはすでに終了しています。");
+        }
+        boolean alreadyObserving = observers.containsKey(player.getUniqueId());
+        observers.putIfAbsent(player.getUniqueId(), new ObserverSnapshot(player.getLocation(), player.getGameMode()));
+        player.setGameMode(GameMode.SPECTATOR);
+        if (player.getGameMode() == GameMode.SPECTATOR) player.setSpectatorTarget(null);
+        if (player.getGameMode() != GameMode.SPECTATOR || !player.teleport(session.spawnLocation())) {
+            if (!alreadyObserving) restoreObserver(player);
+            throw fail("session.error.teleport-failed", "&cセッションワールドへのテレポートに失敗しました。");
+        }
+        return session;
+    }
+
+    private void requireNotObserving(Player player) {
+        if (observers.containsKey(player.getUniqueId())) {
+            throw fail("session.error.already-spectating", "&c観戦中です。先に /azicave session leave で退出してください。");
+        }
+    }
+
     public GameSession leaveSession(Player player) {
+        if (sessionForPlayer(player.getUniqueId()).isEmpty()) {
+            GameSession observed = sessionForWorld(player.getWorld()).orElse(null);
+            if (observed != null && !observed.isMember(player.getUniqueId())) {
+                Location destination = resolveReturnLocation(observed, player.getUniqueId());
+                if (destination == null || !player.teleport(destination)) {
+                    throw fail("session.error.leave-teleport-failed", "&cセッション {session} からのテレポートに失敗しました。", "session", observed.sessionId());
+                }
+                return observed;
+            }
+        }
         GameSession session = sessionForPlayer(player.getUniqueId())
                 .orElseThrow(() -> fail("session.error.not-in-session", "&cセッションに参加していません。"));
         if (session.state() == SessionState.CLOSING) {
@@ -678,6 +723,7 @@ public final class GameSessionManager {
 
         if (!session.world().getPlayers().isEmpty()) {
             plugin.getLogger().warning("Session world still has players after evacuation: " + session.world().getName());
+            return false;
         }
 
         if (!Bukkit.unloadWorld(session.world(), false)) {
@@ -695,7 +741,36 @@ public final class GameSessionManager {
     public boolean isSessionWorldEntryAllowed(Player player, World destinationWorld) {
         GameSession targetSession = sessionsByWorld.get(destinationWorld.getUID());
         return targetSession == null
-                || (targetSession.state() != SessionState.CLOSING && targetSession.isMember(player.getUniqueId()));
+                || (targetSession.state() != SessionState.CLOSING
+                && (targetSession.isMember(player.getUniqueId()) || isAdminSpectator(player)));
+    }
+
+    private boolean isAdminSpectator(Player player) {
+        return player.hasPermission("azicave.session.spectate")
+                && player.getGameMode() == GameMode.SPECTATOR
+                && !pendingSessionCreations.contains(player.getUniqueId())
+                && sessionForPlayer(player.getUniqueId()).isEmpty();
+    }
+
+    public void recordObserverEntry(Player player, Location from, World destinationWorld) {
+        GameSession targetSession = sessionsByWorld.get(destinationWorld.getUID());
+        if (targetSession != null && !targetSession.isMember(player.getUniqueId()) && isAdminSpectator(player)) {
+            observers.putIfAbsent(player.getUniqueId(), new ObserverSnapshot(from.clone(), player.getGameMode()));
+        }
+    }
+
+    public void handleObserverWorldChange(Player player) {
+        if (sessionForWorld(player.getWorld()).isEmpty()) {
+            restoreObserver(player);
+        }
+    }
+
+    private void restoreObserver(Player player) {
+        ObserverSnapshot snapshot = observers.remove(player.getUniqueId());
+        if (snapshot != null) {
+            if (player.getGameMode() == GameMode.SPECTATOR) player.setSpectatorTarget(null);
+            player.setGameMode(snapshot.gameMode());
+        }
     }
 
     public Location fallbackLocation(GameSession excludedSession) {
@@ -742,14 +817,17 @@ public final class GameSessionManager {
             return;
         }
 
-        restorePlayerAttributes(player);
-        restoreGameMode(player);
-        restorePlayerVitals(player);
+        if (sourceSession != null && sourceSession.isMember(player.getUniqueId())) {
+            restorePlayerAttributes(player);
+            restoreGameMode(player);
+            restorePlayerVitals(player);
+        }
     }
 
     public void handlePlayerJoin(Player player) {
         GameSession session = sessionsByWorld.get(player.getWorld().getUID());
         if (session == null) {
+            restoreObserver(player);
             GameSession associatedSession = sessionForPlayer(player.getUniqueId()).orElse(null);
             if (associatedSession != null) {
                 associatedSession.markOnline(player.getUniqueId());
@@ -767,6 +845,11 @@ public final class GameSessionManager {
             return;
         }
 
+        if (!session.isMember(player.getUniqueId()) && isSessionWorldEntryAllowed(player, session.world())) {
+            Location fallback = fallbackLocation(session);
+            if (fallback != null) recordObserverEntry(player, fallback, session.world());
+            return;
+        }
         if (!session.isMember(player.getUniqueId()) || session.state() == SessionState.CLOSING) {
             Location fallback = fallbackLocation(session);
             if (fallback != null) {
@@ -926,6 +1009,7 @@ public final class GameSessionManager {
             endSession(session);
         }
         for (Player player : Bukkit.getOnlinePlayers()) {
+            restoreObserver(player);
             restorePlayerAttributes(player);
             restoreGameMode(player);
             restorePlayerVitals(player);
@@ -1540,10 +1624,13 @@ public final class GameSessionManager {
         List<Player> playersInWorld = new ArrayList<>(session.world().getPlayers());
         for (Player player : playersInWorld) {
             Location returnLocation = resolveReturnLocation(session, player.getUniqueId());
+            if (player.getGameMode() == GameMode.SPECTATOR) player.setSpectatorTarget(null);
             boolean teleported = returnLocation != null && player.teleport(returnLocation);
-            restorePlayerAttributes(player);
-            restoreGameMode(player);
-            restorePlayerVitals(player);
+            if (session.isMember(player.getUniqueId())) {
+                restorePlayerAttributes(player);
+                restoreGameMode(player);
+                restorePlayerVitals(player);
+            }
             if (!teleported) {
                 player.kickPlayer(plugin.messages().prefix() + m("session.kick-closing", "&cセッションワールドを閉じています。"));
             }
@@ -1562,10 +1649,12 @@ public final class GameSessionManager {
     }
 
     private Location resolveReturnLocation(GameSession session, UUID playerId) {
-        Location savedLocation = session.savedLocation(playerId);
+        ObserverSnapshot observer = observers.get(playerId);
+        Location savedLocation = observer == null ? session.savedLocation(playerId) : observer.location();
         if (savedLocation != null
                 && savedLocation.getWorld() != null
                 && !savedLocation.getWorld().getUID().equals(session.world().getUID())
+                && Bukkit.getWorld(savedLocation.getWorld().getUID()) != null
                 && sessionForWorld(savedLocation.getWorld()).isEmpty()) {
             return savedLocation;
         }
@@ -1626,6 +1715,9 @@ public final class GameSessionManager {
                     player.getExhaustion()
             );
         }
+    }
+
+    private record ObserverSnapshot(Location location, GameMode gameMode) {
     }
 
     private record SessionCreationPlan(

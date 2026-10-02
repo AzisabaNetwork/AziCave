@@ -86,7 +86,7 @@ public final class AziCaveCommand implements TabExecutor {
             return List.of("on", "off").stream().filter(option -> option.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         }
         if (args.length == 2 && "session".equalsIgnoreCase(args[0])) {
-            return List.of("create", "join", "leave", "list", "forceend").stream()
+            return List.of("create", "join", "spectate", "leave", "list", "forceend").stream()
                     .filter(option -> option.startsWith(args[1].toLowerCase(Locale.ROOT)))
                     .toList();
         }
@@ -115,7 +115,7 @@ public final class AziCaveCommand implements TabExecutor {
                     .toList();
         }
         if (args.length == 3 && "session".equalsIgnoreCase(args[0])
-                && ("join".equalsIgnoreCase(args[1]) || "forceend".equalsIgnoreCase(args[1]))) {
+                && ("join".equalsIgnoreCase(args[1]) || "spectate".equalsIgnoreCase(args[1]) || "forceend".equalsIgnoreCase(args[1]))) {
             return plugin.gameSessionManager().sessions().stream()
                     .map(GameSession::sessionId)
                     .filter(option -> option.startsWith(args[2].toLowerCase(Locale.ROOT)))
@@ -183,13 +183,14 @@ public final class AziCaveCommand implements TabExecutor {
 
     private boolean handleSession(CommandSender sender, String[] args) {
         if (args.length == 0) {
-            tell(sender, "commands.usage.session", "&e使い方: /azicave session <create|join|leave|list|forceend>");
+            tell(sender, "commands.usage.session", "&e使い方: /azicave session <create|join|spectate|leave|list|forceend>");
             return true;
         }
 
         return switch (args[0].toLowerCase(Locale.ROOT)) {
             case "create" -> handleSessionCreate(sender, Arrays.copyOfRange(args, 1, args.length));
             case "join" -> handleSessionJoin(sender, Arrays.copyOfRange(args, 1, args.length));
+            case "spectate" -> handleSessionSpectate(sender, Arrays.copyOfRange(args, 1, args.length));
             case "leave" -> handleSessionLeave(sender, Arrays.copyOfRange(args, 1, args.length));
             case "list" -> handleSessionList(sender);
             case "forceend" -> handleSessionForceEnd(sender, Arrays.copyOfRange(args, 1, args.length));
@@ -261,9 +262,31 @@ public final class AziCaveCommand implements TabExecutor {
         return true;
     }
 
+    private boolean handleSessionSpectate(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("azicave.session.spectate")) {
+            tell(sender, "commands.permission.session-spectate", "&cセッションを観戦する権限がありません。");
+            return true;
+        }
+        if (!(sender instanceof Player player)) {
+            tell(sender, "commands.player-only", "&cこのコマンドはプレイヤーだけが実行できます。");
+            return true;
+        }
+        if (args.length != 1) {
+            tell(sender, "commands.usage.session-spectate", "&e使い方: /azicave session spectate <sessionId>");
+            return true;
+        }
+        try {
+            GameSession session = plugin.gameSessionManager().spectateSession(player, args[0]);
+            tell(sender, "session.admin-spectating", "&eセッション {session} を観戦中です。/tp で移動、/azicave session leave で退出できます。", "session", session.sessionId());
+        } catch (IllegalStateException ex) {
+            tellRaw(sender, ex.getMessage());
+        }
+        return true;
+    }
+
     private boolean handleSessionLeave(CommandSender sender, String[] args) {
         args = withoutConfirmFlag(args);
-        if (!sender.hasPermission("azicave.session")) {
+        if (!sender.hasPermission("azicave.session") && !sender.hasPermission("azicave.session.spectate")) {
             tell(sender, "commands.permission.session", "&cAziCaveセッションを操作する権限がありません。");
             return true;
         }

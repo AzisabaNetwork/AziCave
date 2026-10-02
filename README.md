@@ -202,6 +202,9 @@ Mob は `azicave.mobs` の重みとスポーン間隔でダンジョン内に出
 
 - `/azicave session create [maxPlayers]` で session を作成します。
 - `/azicave session join <sessionId>` で参加します。
+- `azicave.session.spectate` 権限（デフォルト: OP）があれば `/azicave session spectate <sessionId>` で管理者として自由に観戦できます。参加中の場合は先に退出してください。
+- 管理観戦者は人数・統計・ラウンド進行に含まれず、スペクテイターモードのまま通常の `/tp` でセッション間や外部ワールドへ移動できます。観戦権限はバニラのテレポート権限も付与します。他プラグインが `/tp` を置き換えている場合は `/minecraft:tp` を使用してください。
+- 管理観戦は `/azicave session leave` で退出できます。観戦コマンド使用前のゲームモードへ戻り、セッション終了時は全観戦者も退避してからワールドをアンロードします。
 - `/azicave session leave` で退出します。
 - `/azicave session list` で state、round、人数、共有資金などを確認します。
 - `/azicave session forceend <sessionId>` で強制終了します。

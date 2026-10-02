@@ -2,13 +2,17 @@ package net.azisaba.aziCave.game;
 
 import com.destroystokyo.paper.event.player.PlayerStopSpectatingEntityEvent;
 import org.bukkit.World;
+import org.bukkit.GameMode;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerGameModeChangeEvent;
 
 public final class SessionPlayerListener implements Listener {
     private final net.azisaba.aziCave.AziCave plugin;
@@ -37,6 +41,27 @@ public final class SessionPlayerListener implements Listener {
         }
 
         sessionManager.handlePlayerWorldChange(event.getPlayer(), event.getFrom(), event.getTo());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onObserverTeleport(PlayerTeleportEvent event) {
+        if (event.getTo() != null && event.getTo().getWorld() != null) {
+            sessionManager.recordObserverEntry(event.getPlayer(), event.getFrom(), event.getTo().getWorld());
+        }
+    }
+
+    @EventHandler
+    public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
+        sessionManager.handleObserverWorldChange(event.getPlayer());
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onObserverGameModeChange(PlayerGameModeChangeEvent event) {
+        GameSession session = sessionManager.sessionForWorld(event.getPlayer().getWorld()).orElse(null);
+        if (session != null && !session.isMember(event.getPlayer().getUniqueId())
+                && event.getNewGameMode() != GameMode.SPECTATOR) {
+            event.setCancelled(true);
+        }
     }
 
     @EventHandler(ignoreCancelled = true)

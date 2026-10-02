@@ -29,6 +29,11 @@ permissions:
   azicave.session.list:
     description: Allows listing all active AziCave sessions.
     default: op
+  azicave.session.spectate:
+    description: Allows freely spectating AziCave sessions and teleporting between them in spectator mode.
+    default: op
+    children:
+      minecraft.command.teleport: true
   azicave.money:
     description: Allows viewing and editing AziCave session money.
     default: op

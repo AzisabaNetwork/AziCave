@@ -16,8 +16,6 @@ import org.bukkit.entity.*;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.EnchantmentStorageMeta;
 import org.bukkit.inventory.meta.PotionMeta;
-import org.bukkit.potion.PotionEffect;
-import org.bukkit.potion.PotionEffectType;
 import org.bukkit.potion.PotionType;
 
 import java.util.ArrayList;
@@ -102,7 +100,6 @@ public enum MobProfile {
 
         if (mob instanceof Creeper creeper) {
             creeper.setPowered(true);
-            creeper.addPotionEffect(new PotionEffect(PotionEffectType.INVISIBILITY, Integer.MAX_VALUE, 0, false, false, true));
         }
 
         if (mob.getType() == EntityType.COPPER_GOLEM) {

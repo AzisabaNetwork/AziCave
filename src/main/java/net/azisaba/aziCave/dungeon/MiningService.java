@@ -199,6 +199,9 @@ public final class MiningService implements Listener {
 
     @EventHandler(ignoreCancelled = true)
     public void onBlockBreak(BlockBreakEvent event) {
+        if (event.getBlock().getType() == plugin.settings().azicave().mining().triggerMaterial()) {
+            event.setDropItems(false);
+        }
         TriggerGimmick gimmick = triggers.remove(BlockKey.of(event.getBlock()));
         if (gimmick == null) {
             return;
