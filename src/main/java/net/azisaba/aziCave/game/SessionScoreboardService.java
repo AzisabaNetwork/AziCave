@@ -44,6 +44,10 @@ public final class SessionScoreboardService {
         if (task != null) {
             return;
         }
+        ScoreboardManager manager = Bukkit.getScoreboardManager();
+        if (manager != null) {
+            clearLegacyScoreboard(manager.getMainScoreboard());
+        }
         task = Bukkit.getScheduler().runTaskTimer(plugin, this::updateAll, 1L, 20L);
     }
 
@@ -215,7 +219,21 @@ public final class SessionScoreboardService {
         ScoreboardManager manager = Bukkit.getScoreboardManager();
         Scoreboard scoreboard = playerScoreboards.remove(player.getUniqueId());
         if (manager != null && scoreboard != null && player.getScoreboard() == scoreboard) {
-            player.setScoreboard(manager.getMainScoreboard());
+            Scoreboard mainScoreboard = manager.getMainScoreboard();
+            clearLegacyScoreboard(mainScoreboard);
+            player.setScoreboard(mainScoreboard);
+        }
+    }
+
+    static void clearLegacyScoreboard(Scoreboard scoreboard) {
+        // Older versions left persistent AziCave data on the main scoreboard.
+        Objective objective = scoreboard.getObjective(OBJECTIVE_NAME);
+        if (objective != null) {
+            objective.unregister();
+        }
+        Team team = scoreboard.getTeam("azicave_hidden");
+        if (team != null) {
+            team.unregister();
         }
     }
 
