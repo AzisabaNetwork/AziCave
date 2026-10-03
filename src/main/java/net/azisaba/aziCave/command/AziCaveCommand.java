@@ -6,6 +6,9 @@ import net.azisaba.aziCave.author.PieceAuthoringResult;
 import net.azisaba.aziCave.author.SelectionLookupException;
 import net.azisaba.aziCave.author.TemplateAuthoringException;
 import net.azisaba.aziCave.game.GameSession;
+import net.azisaba.aziCave.game.RoundState;
+import net.azisaba.aziCave.game.SessionState;
+import net.azisaba.aziCave.entity.MobProfile;
 import net.azisaba.aziCave.config.GenerationSettings;
 import net.azisaba.aziCave.math.BlockBox;
 import net.azisaba.aziCave.dungeon.DungeonGenerationResult;
@@ -82,8 +85,19 @@ public final class AziCaveCommand implements TabExecutor {
             List<String> options = List.of("--patterns=", "--start=", "--world=", "--x=", "--y=", "--z=", "--seed=", "--depth=");
             return options.stream().filter(option -> option.startsWith(args[args.length - 1])).toList();
         }
-        if (args.length == 2 && "debug".equalsIgnoreCase(args[0])) {
-            return List.of("on", "off").stream().filter(option -> option.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+        if (args.length >= 2 && "debug".equalsIgnoreCase(args[0])) {
+            if (!sender.hasPermission("azicave.command.debug")) {
+                return List.of();
+            }
+            if (args.length == 2) {
+                return List.of("on", "off", "spawn").stream()
+                        .filter(option -> option.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+            }
+            if (args.length == 3 && "spawn".equalsIgnoreCase(args[1])) {
+                return Arrays.stream(MobProfile.values()).map(MobProfile::key)
+                        .filter(option -> option.startsWith(args[2].toLowerCase(Locale.ROOT))).toList();
+            }
+            return List.of();
         }
         if (args.length == 2 && "session".equalsIgnoreCase(args[0])) {
             return List.of("create", "join", "spectate", "leave", "list", "forceend").stream()
@@ -694,8 +708,11 @@ public final class AziCaveCommand implements TabExecutor {
 
     private boolean handleDebug(CommandSender sender, String[] args) {
         if (!sender.hasPermission("azicave.command.debug")) {
-            tell(sender, "commands.permission.debug", "&cデバッグログを切り替える権限がありません。");
+            tell(sender, "commands.permission.debug", "&cデバッグコマンドを実行する権限がありません。");
             return true;
+        }
+        if (args.length > 0 && "spawn".equalsIgnoreCase(args[0])) {
+            return handleDebugSpawn(sender, Arrays.copyOfRange(args, 1, args.length));
         }
         boolean enabled;
         if (args.length == 0) {
@@ -710,6 +727,39 @@ public final class AziCaveCommand implements TabExecutor {
         plugin.setDebugEnabled(enabled);
         tell(sender, enabled ? "commands.debug-enabled" : "commands.debug-disabled",
                 enabled ? "&aAziCaveのデバッグログを有効にしました。" : "&aAziCaveのデバッグログを無効にしました。");
+        return true;
+    }
+
+    private boolean handleDebugSpawn(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            tell(sender, "commands.player-only", "&cこのコマンドはプレイヤーだけが実行できます。");
+            return true;
+        }
+        if (args.length != 1) {
+            tell(sender, "commands.usage.debug-spawn", "&e使い方: /azicave debug spawn <mob名>");
+            return true;
+        }
+        MobProfile profile = Arrays.stream(MobProfile.values())
+                .filter(option -> option.key().equalsIgnoreCase(args[0])).findFirst().orElse(null);
+        if (profile == null) {
+            tell(sender, "commands.unknown.mob", "&c不明なmobです: {mob}。TAB補完でmob名を選択してください。", "mob", args[0]);
+            return true;
+        }
+        GameSession session = plugin.gameSessionManager().sessionForWorld(player.getWorld()).orElse(null);
+        if (session == null || session.state() != SessionState.IN_ROUND || session.roundState() != RoundState.ACTIVE) {
+            tell(sender, "commands.debug-spawn-active-only", "&c探索中のセッションワールド内で実行してください。");
+            return true;
+        }
+        try {
+            if (plugin.mobSpawnManager().spawnMob(session, player.getLocation(), profile) == null) {
+                tell(sender, "commands.debug-spawn-failed", "&cmobのスポーンに失敗しました。サーバーログを確認してください。");
+                return true;
+            }
+            tell(sender, "commands.debug-spawned", "&a現在位置に {mob} をスポーンしました。", "mob", profile.key());
+        } catch (RuntimeException ex) {
+            tell(sender, "commands.debug-spawn-failed", "&cmobのスポーンに失敗しました。サーバーログを確認してください。");
+            plugin.getLogger().log(java.util.logging.Level.WARNING, "Debug mob spawn failed: " + profile.key(), ex);
+        }
         return true;
     }
 

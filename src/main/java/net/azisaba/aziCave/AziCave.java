@@ -229,6 +229,10 @@ public final class AziCave extends JavaPlugin {
         return gameSessionManager;
     }
 
+    public MobSpawnManager mobSpawnManager() {
+        return mobSpawnManager;
+    }
+
     public MessageService messages() {
         return messageService;
     }

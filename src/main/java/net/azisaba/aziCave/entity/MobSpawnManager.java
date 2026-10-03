@@ -158,24 +158,39 @@ public final class MobSpawnManager {
             }
             MobProfileSettings profileSettings = mobSpawnSettings.profile(profile);
 
-            Entity entity = session.world().spawnEntity(spawnLocation, profile.entityType());
-            if (entity instanceof LivingEntity livingEntity) {
-                profile.apply(livingEntity, profileSettings);
-                if (livingEntity instanceof Mob mob) {
-                    double strollSpeed = mob instanceof Creaking ? profileSettings.ai().creaking().strollSpeed() : 1.0D;
-                    Bukkit.getMobGoals().addGoal(mob, 6, new RandomStrollGoal(mob, strollTargets(session), strollSpeed));
-                    if (mob instanceof Creaking creaking && profileSettings.ai().enabled()) {
-                        Bukkit.getMobGoals().addGoal(creaking, 2, new CreakingChaseGoal(creaking, profileSettings.ai().creaking()));
-                    }
-                }
-                mobAiManager.track(livingEntity, profile);
+            if (spawnMob(session, spawnLocation, profile) != null) {
                 alivePower += profileSettings.power();
                 aliveCounts.merge(profile, 1, Integer::sum);
                 nearbyPowers.replaceAll((player, power) -> player.distanceSquared(spawnLocation) <= radiusSquared
                         ? (int) Math.min(Integer.MAX_VALUE, (long) power + profileSettings.power()) : power);
-            } else {
-                entity.remove();
             }
+        }
+    }
+
+    public LivingEntity spawnMob(GameSession session, Location location, MobProfile profile) {
+        if (!session.world().equals(location.getWorld())) {
+            throw new IllegalArgumentException("Spawn location must be in the session world");
+        }
+        MobProfileSettings settings = plugin.settings().azicave().mobSpawn().profile(profile);
+        Entity entity = session.world().spawnEntity(location, profile.entityType());
+        if (!(entity instanceof LivingEntity mob)) {
+            entity.remove();
+            return null;
+        }
+        try {
+            profile.apply(mob, settings);
+            if (mob instanceof Mob aiMob) {
+                double strollSpeed = aiMob instanceof Creaking ? settings.ai().creaking().strollSpeed() : 1.0D;
+                Bukkit.getMobGoals().addGoal(aiMob, 6, new RandomStrollGoal(aiMob, strollTargets(session), strollSpeed));
+                if (aiMob instanceof Creaking creaking && settings.ai().enabled()) {
+                    Bukkit.getMobGoals().addGoal(creaking, 2, new CreakingChaseGoal(creaking, settings.ai().creaking()));
+                }
+            }
+            mobAiManager.track(mob, profile);
+            return mob;
+        } catch (RuntimeException ex) {
+            entity.remove();
+            throw ex;
         }
     }
 

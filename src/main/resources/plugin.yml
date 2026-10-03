@@ -47,7 +47,7 @@ permissions:
     description: Allows reloading AziCave configuration.
     default: op
   azicave.command.debug:
-    description: Allows toggling AziCave debug logging.
+    description: Allows toggling AziCave debug logging and spawning debug mobs.
     default: op
   azicave.command.generate:
     description: Allows generating dungeons.

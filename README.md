@@ -57,6 +57,18 @@ AziCave は、ローグライク向けにダンジョンピースをランダム
 /azicave debug off
 ```
 
+### mobの手動スポーン
+
+```text
+/azicave debug spawn <mob名>
+/azicave debug spawn creaking
+```
+
+探索中のセッションワールド内で、現在位置に1体スポーンします。観戦中の管理者も実行できます。
+権限は `azicave.command.debug`（デフォルト: OP）です。デバッグログの有効化は不要です。
+mob名は `zombie_brute`、`skeleton_archer`、`powered_creeper`、`mini_enderman`、`copper_golem`、`creaking` で、TAB補完に対応しています。
+自然スポーンの光量・距離・出現数制限を無視し、設定済みの能力値・専用AI・ドロップを適用します。通常のデスポーン処理は適用されます。
+
 ### ゲーム内 authoring
 
 piece と entrance は WorldEdit 選択とコマンドだけで更新できます。  
