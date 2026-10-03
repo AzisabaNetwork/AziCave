@@ -57,6 +57,16 @@ AziCave は、ローグライク向けにダンジョンピースをランダム
 /azicave debug off
 ```
 
+### 現在のセッションのmob状況
+
+```text
+/azicave debug mobs
+```
+
+現在いるセッションワールドの補正後の最大パワー、現在パワー、総モブ数、種類別モブ数（0体の種類も含む）をチャットに表示します。
+自然スポーンと同じ基準で探索人数・最大深度を計算し、補正の根拠も表示します。探索者がいない場合は人数・深度を0として計算します。
+ホームや管理観戦中でも実行でき、debugログがOFFでも利用できます。権限は `azicave.command.debug`（デフォルト: OP）です。
+
 ### mobの手動スポーン
 
 ```text
@@ -197,6 +207,15 @@ debug|scope=schematic|event=paste_begin|piece=start_room|rotation=90|schematic=C
 debug|scope=generation|event=candidate_rejected|candidate=corner_room|reason=collision|rotation=180|origin=110,64,95
 debug|scope=carve|event=applied|parentBox=100,65,100->102,67,102|childBox=100,65,99->100,66,99
 ```
+
+Mob の湧き状況は `scope=mob_spawn` で出力します（debug OFF 時は出力しません）。
+
+- `wave_status`: スポーン間隔ごとのセッション・ワールド・探索人数・深度、設定上の基本最大パワー (`baseMaxAlivePower`)、深度と人数補正後の最大パワー (`maxAlivePower`)、現在パワー (`alivePower`)、生存数と種類別内訳。
+- `nearby_status`: プレイヤー位置ごとの周辺パワーと上限・判定半径（周辺制限が有効な場合）。
+- `wave_skipped`: 探索者なし (`no_exploring_players`)、最大パワー無効 (`max_power_disabled`)、全体パワー上限 (`global_power_limit`) によるスポーン停止。探索者なしの場合、`wave_status` の人数・深度は 0 です。
+- `wave_complete`: 今回のスポーン数と判定対象の部屋数、場所が見つからなかった回数 (`noLocation`: 距離・周辺パワー制限、床・空間・天空光、光量・松明の条件)、残りパワー・種類別上限・重みで選べるモブがなかった回数 (`noProfile`)、失敗数 (`failed`)、スポーン後のパワーと生存数。
+- `spawned` / `spawn_failed`: 自然・手動スポーン時のモブ名、座標、成功時のパワー・深度・UUID、失敗時の理由。
+- `despawned`: プレイヤーから離れたモブの削除数と削除後の生存数。
 
 ## 敵配置について
 

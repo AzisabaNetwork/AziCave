@@ -90,7 +90,7 @@ public final class AziCaveCommand implements TabExecutor {
                 return List.of();
             }
             if (args.length == 2) {
-                return List.of("on", "off", "spawn").stream()
+                return List.of("on", "off", "spawn", "mobs").stream()
                         .filter(option -> option.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
             }
             if (args.length == 3 && "spawn".equalsIgnoreCase(args[1])) {
@@ -714,6 +714,9 @@ public final class AziCaveCommand implements TabExecutor {
         if (args.length > 0 && "spawn".equalsIgnoreCase(args[0])) {
             return handleDebugSpawn(sender, Arrays.copyOfRange(args, 1, args.length));
         }
+        if (args.length > 0 && "mobs".equalsIgnoreCase(args[0])) {
+            return handleDebugMobs(sender, Arrays.copyOfRange(args, 1, args.length));
+        }
         boolean enabled;
         if (args.length == 0) {
             enabled = !plugin.debugLogger().isEnabled();
@@ -727,6 +730,32 @@ public final class AziCaveCommand implements TabExecutor {
         plugin.setDebugEnabled(enabled);
         tell(sender, enabled ? "commands.debug-enabled" : "commands.debug-disabled",
                 enabled ? "&aAziCaveのデバッグログを有効にしました。" : "&aAziCaveのデバッグログを無効にしました。");
+        return true;
+    }
+
+    private boolean handleDebugMobs(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            tell(sender, "commands.player-only", "&cこのコマンドはプレイヤーだけが実行できます。");
+            return true;
+        }
+        if (args.length != 0) {
+            tell(sender, "commands.usage.debug-mobs", "&e使い方: /azicave debug mobs");
+            return true;
+        }
+        GameSession session = plugin.gameSessionManager().sessionForWorld(player.getWorld()).orElse(null);
+        if (session == null) {
+            tell(sender, "commands.debug-mobs-session-only", "&cセッションワールド内で実行してください。");
+            return true;
+        }
+        var status = plugin.mobSpawnManager().mobStatus(session);
+        tell(sender, "commands.debug-mobs-summary",
+                "&eセッション {session}: 最大パワー(補正後)={maxPower} 現在パワー={power} モブ数={count} 探索人数={players} 深度={depth}",
+                "session", session.sessionId(), "maxPower", status.maxAlivePower(), "power", status.alivePower(),
+                "count", status.aliveCount(), "players", status.exploringPlayers(), "depth", status.depth());
+        for (MobProfile profile : MobProfile.values()) {
+            tell(sender, "commands.debug-mobs-profile", "&7{mob}: {count}体",
+                    "mob", profile.key(), "count", status.aliveCounts().getOrDefault(profile, 0));
+        }
         return true;
     }
 

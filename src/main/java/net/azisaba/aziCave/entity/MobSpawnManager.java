@@ -57,19 +57,50 @@ public final class MobSpawnManager {
                 elapsedTicks += 20L;
                 MobSpawnSettings settings = plugin.settings().azicave().mobSpawn();
                 List<Location> players = exploringPlayers(session);
-                List<LivingEntity> mobs = new ArrayList<>(session.world().getLivingEntities().stream()
-                        .filter(entity -> entity.isValid() && !entity.isDead()
-                                && entity.getScoreboardTags().contains(MobProfile.MOB_TAG))
-                        .toList());
+                List<LivingEntity> mobs = new ArrayList<>(livingMobs(session.world()));
+                int beforeDespawn = mobs.size();
                 despawnDistantMobs(mobs, players, settings.despawn(), farSince, elapsedTicks);
+                if (mobs.size() < beforeDespawn) {
+                    plugin.debugLogger().log("mob_spawn", "despawned", Map.of(
+                            "session", session.sessionId(), "world", session.world().getName(),
+                            "count", beforeDespawn - mobs.size(), "aliveCount", mobs.size(),
+                            "reason", "distant_from_players"));
+                }
                 if (elapsedTicks - lastWaveTicks >= settings.intervalTicks()) {
                     lastWaveTicks = elapsedTicks;
-                    if (!players.isEmpty()) {
-                        spawnWave(session, players, mobs, settings);
-                    }
+                    spawnWave(session, players, mobs, settings);
                 }
             }
         }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    public MobStatus mobStatus(GameSession session) {
+        MobSpawnSettings settings = plugin.settings().azicave().mobSpawn();
+        List<Location> players = exploringPlayers(session);
+        List<LivingEntity> mobs = livingMobs(session.world());
+        int depth = players.stream().mapToInt(session::resolveDepth).max().orElse(0);
+        return new MobStatus(depth, players.size(), settings.scaledMaxAlivePower(depth, players.size()),
+                currentAlivePower(mobs, settings), mobs.size(), Map.copyOf(aliveCounts(mobs)));
+    }
+
+    private static List<LivingEntity> livingMobs(World world) {
+        return world.getLivingEntities().stream()
+                .filter(entity -> entity.isValid() && !entity.isDead()
+                        && entity.getScoreboardTags().contains(MobProfile.MOB_TAG))
+                .toList();
+    }
+
+    private static Map<MobProfile, Integer> aliveCounts(List<LivingEntity> mobs) {
+        Map<MobProfile, Integer> counts = new EnumMap<>(MobProfile.class);
+        for (LivingEntity mob : mobs) {
+            MobProfile profile = MobProfile.fromEntity(mob);
+            if (profile != null) counts.merge(profile, 1, Integer::sum);
+        }
+        return counts;
+    }
+
+    public record MobStatus(int depth, int exploringPlayers, int maxAlivePower, int alivePower,
+                            int aliveCount, Map<MobProfile, Integer> aliveCounts) {
     }
 
     static List<Location> exploringPlayers(GameSession session) {
@@ -115,22 +146,34 @@ public final class MobSpawnManager {
     }
 
     private void spawnWave(GameSession session, List<Location> players, List<LivingEntity> mobs, MobSpawnSettings mobSpawnSettings) {
+        if (players.isEmpty() && !plugin.debugLogger().isEnabled()) {
+            return;
+        }
         Random random = ThreadLocalRandom.current();
         int depth = players.stream().mapToInt(session::resolveDepth).max().orElse(0);
         int maxAlivePower = mobSpawnSettings.scaledMaxAlivePower(depth, players.size());
-        if (maxAlivePower <= 0) {
-            return;
-        }
-
         int alivePower = currentAlivePower(mobs, mobSpawnSettings);
-        if (alivePower >= maxAlivePower) {
-            return;
+        Map<MobProfile, Integer> aliveCounts = aliveCounts(mobs);
+        if (plugin.debugLogger().isEnabled()) {
+            Map<String, Integer> counts = new LinkedHashMap<>();
+            for (MobProfile profile : MobProfile.values()) {
+                counts.put(profile.key(), aliveCounts.getOrDefault(profile, 0));
+            }
+            plugin.debugLogger().log("mob_spawn", "wave_status", Map.ofEntries(
+                    Map.entry("session", session.sessionId()), Map.entry("world", session.world().getName()),
+                    Map.entry("state", session.state()), Map.entry("roundState", session.roundState()),
+                    Map.entry("bossBattle", session.isBossBattleActive()), Map.entry("depth", depth),
+                    Map.entry("players", players.size()), Map.entry("baseMaxAlivePower", mobSpawnSettings.maxAlivePower()),
+                    Map.entry("maxAlivePower", maxAlivePower), Map.entry("alivePower", alivePower),
+                    Map.entry("aliveCount", mobs.size()), Map.entry("aliveCounts", counts)));
         }
-
-        Map<MobProfile, Integer> aliveCounts = new EnumMap<>(MobProfile.class);
-        for (LivingEntity mob : mobs) {
-            MobProfile profile = MobProfile.fromEntity(mob);
-            if (profile != null) aliveCounts.merge(profile, 1, Integer::sum);
+        String skipReason = players.isEmpty() ? "no_exploring_players"
+                : maxAlivePower <= 0 ? "max_power_disabled"
+                : alivePower >= maxAlivePower ? "global_power_limit" : null;
+        if (skipReason != null) {
+            plugin.debugLogger().log("mob_spawn", "wave_skipped", Map.of(
+                    "session", session.sessionId(), "reason", skipReason));
+            return;
         }
         Map<Location, Integer> nearbyPowers = new LinkedHashMap<>();
         double radiusSquared = mobSpawnSettings.nearbyLimit().radius() * mobSpawnSettings.nearbyLimit().radius();
@@ -138,33 +181,55 @@ public final class MobSpawnManager {
             nearbyPowers.put(player, currentAlivePower(mobs.stream()
                     .filter(mob -> player.distanceSquared(mob.getLocation()) <= radiusSquared).toList(), mobSpawnSettings));
         }
+        if (plugin.debugLogger().isEnabled() && mobSpawnSettings.nearbyLimit().enabled()) {
+            for (Map.Entry<Location, Integer> entry : nearbyPowers.entrySet()) {
+                plugin.debugLogger().log("mob_spawn", "nearby_status", Map.of(
+                        "session", session.sessionId(), "playerLocation", entry.getKey().toVector(),
+                        "alivePower", entry.getValue(), "maxAlivePower", mobSpawnSettings.nearbyLimit().maxAlivePower(),
+                        "radius", mobSpawnSettings.nearbyLimit().radius()));
+            }
+        }
         List<PlacedPiece> rooms = session.placedPieces().stream()
                 .filter(piece -> !mobSpawnSettings.playerDistance().enabled()
                         || isRoomNearPlayers(piece.worldBounds(), players, mobSpawnSettings.playerDistance().maxDistance()))
                 .toList();
 
+        int spawned = 0;
+        int noLocation = 0;
+        int noProfile = 0;
+        int failed = 0;
         for (int index = 0; index < mobSpawnSettings.countPerInterval() && alivePower < maxAlivePower; index++) {
             int globalRemainingPower = maxAlivePower - alivePower;
             Predicate<Location> allowed = location -> mobSpawnSettings.playerDistance().allows(nearestDistanceSquared(location, players))
                     && remainingSpawnPower(location, nearbyPowers, mobSpawnSettings.nearbyLimit(), globalRemainingPower) > 0;
             Location spawnLocation = findSpawnLocation(session.world(), rooms, random, mobSpawnSettings.light(), allowed);
             if (spawnLocation == null) {
+                noLocation++;
                 continue;
             }
             int remainingPower = remainingSpawnPower(spawnLocation, nearbyPowers, mobSpawnSettings.nearbyLimit(), globalRemainingPower);
             MobProfile profile = mobSpawnSettings.selectRandomProfile(random, remainingPower, aliveCounts);
             if (profile == null) {
+                noProfile++;
                 continue;
             }
             MobProfileSettings profileSettings = mobSpawnSettings.profile(profile);
 
             if (spawnMob(session, spawnLocation, profile) != null) {
+                spawned++;
                 alivePower += profileSettings.power();
                 aliveCounts.merge(profile, 1, Integer::sum);
                 nearbyPowers.replaceAll((player, power) -> player.distanceSquared(spawnLocation) <= radiusSquared
                         ? (int) Math.min(Integer.MAX_VALUE, (long) power + profileSettings.power()) : power);
+            } else {
+                failed++;
             }
         }
+        plugin.debugLogger().log("mob_spawn", "wave_complete", Map.of(
+                "session", session.sessionId(), "candidateRooms", rooms.size(),
+                "spawned", spawned, "noLocation", noLocation, "noProfile", noProfile, "failed", failed,
+                "alivePower", alivePower, "maxAlivePower", maxAlivePower,
+                "aliveCount", mobs.size() + spawned, "aliveCounts", aliveCounts));
     }
 
     public LivingEntity spawnMob(GameSession session, Location location, MobProfile profile) {
@@ -175,6 +240,9 @@ public final class MobSpawnManager {
         Entity entity = session.world().spawnEntity(location, profile.entityType());
         if (!(entity instanceof LivingEntity mob)) {
             entity.remove();
+            plugin.debugLogger().log("mob_spawn", "spawn_failed", Map.of(
+                    "session", session.sessionId(), "profile", profile.key(), "location", location.toVector(),
+                    "reason", "not_living_entity"));
             return null;
         }
         try {
@@ -187,9 +255,18 @@ public final class MobSpawnManager {
                 }
             }
             mobAiManager.track(mob, profile);
+            if (plugin.debugLogger().isEnabled()) {
+                plugin.debugLogger().log("mob_spawn", "spawned", Map.of(
+                        "session", session.sessionId(), "world", session.world().getName(),
+                        "profile", profile.key(), "entity", mob.getUniqueId(), "power", settings.power(),
+                        "location", location.toVector(), "depth", session.resolveDepth(location)));
+            }
             return mob;
         } catch (RuntimeException ex) {
             entity.remove();
+            plugin.debugLogger().log("mob_spawn", "spawn_failed", Map.of(
+                    "session", session.sessionId(), "profile", profile.key(), "location", location.toVector(),
+                    "reason", ex.toString()));
             throw ex;
         }
     }
