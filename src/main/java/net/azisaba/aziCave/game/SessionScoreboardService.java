@@ -113,11 +113,7 @@ public final class SessionScoreboardService {
 
     private void show(Player player, GameSession session) {
         ScoreboardManager manager = Bukkit.getScoreboardManager();
-        if (manager == null) {
-            return;
-        }
-
-        Scoreboard scoreboard = manager.getNewScoreboard();
+        Scoreboard scoreboard = manager.getMainScoreboard();
         Objective objective = scoreboard.registerNewObjective(
                 OBJECTIVE_NAME,
                 "dummy",

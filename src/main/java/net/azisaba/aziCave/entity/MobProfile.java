@@ -94,7 +94,7 @@ public enum MobProfile {
         }
 
         if (mob.getType() == EntityType.CREAKING) {
-            applyAttribute(mob, Attribute.SCALE, 0.7D);
+            applyAttribute(mob, Attribute.SCALE, 0.6D);
             mob.setInvulnerable(true);
         }
 
