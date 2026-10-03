@@ -217,6 +217,23 @@ Mob の湧き状況は `scope=mob_spawn` で出力します（debug OFF 時は�
 - `spawned` / `spawn_failed`: 自然・手動スポーン時のモブ名、座標、成功時のパワー・深度・UUID、失敗時の理由。
 - `despawned`: プレイヤーから離れたモブの削除数と削除後の生存数。
 
+nametag の調査ログは `scope=nametag` で、debug ON 中に約5秒間隔で出力します。
+有効化後の初回には `environment` としてサーバーバージョンと導入プラグイン一覧も記録します。
+セッション参加者とセッションワールド内の観戦者について、scoreboard 更新前 (`before_update`)、
+更新直後 (`after_update`)、1 tick 後 (`next_tick`) の状態を記録します。
+
+- `viewer` / `world` / `mode`: 名前を見る側のプレイヤー、ワールド、ゲームモード。
+- `board` / `expectedBoard` / `ownBoard`: 実際の scoreboard と AziCave が保持する scoreboard の識別値・一致状態。
+  `before_update` や `next_tick` で `ownBoard=false` なら、別の処理による差し替えの可能性があります。
+  初回適用前や通常の参加者でない観戦者は `expectedBoard=none` です。
+- `mainBoard` / `sidebar`: main scoreboard かどうかとサイドバー Objective 名。
+- `targets`: 同じワールド内の各プレイヤーについて、見る側の scoreboard 上の所属 Team と nametag 設定。
+  `Alice:azicave_hidden/NEVER` なら API 上は非表示、`Alice:none` や `ALWAYS` なら Team 未適用・上書きが疑われます。
+
+再現時は `/azicave debug on` を実行し、10秒程度待ってから `/azicave debug off` に戻してください。
+`ownBoard=true` と全対象の `NEVER` が維持されていても見える場合、API 上の状態だけでは原因を特定できないため、
+名前表示を変更するプラグインによるパケット操作やクライアント側の表示を追加で調べます。
+
 ## 敵配置について
 
 Mob は `azicave.mobs` の重みとスポーン間隔でダンジョン内に出現します。テンプレート YAML の `enemy-sockets` は読みません。
