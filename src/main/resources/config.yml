@@ -307,11 +307,11 @@ azicave:
   mob-spawn-count-per-interval: 1
   mob-spawn-max-alive-power: 16
   # 全体上限 = 基本power × 深さ倍率 × 人数倍率（小数点以下切り捨て）。湧き数・周囲上限は変えない。
-  # 深さは現在探索中の生存プレイヤーの最深位置（入口depth=0）、人数はその探索人数。
+  # 深さはダンジョン生成時に設定したdepth、人数は現在探索中の生存プレイヤー数。
   mob-spawn-power-scaling:
     enabled: true
     depth:
-      # min(max-multiplier, 1 + 現在の最深depth × multiplier-per-level)
+      # min(max-multiplier, 1 + ダンジョンのdepth × multiplier-per-level)
       multiplier-per-level: 0.5
       max-multiplier: 3.0
     players:

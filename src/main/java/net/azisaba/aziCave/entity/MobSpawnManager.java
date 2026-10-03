@@ -78,7 +78,7 @@ public final class MobSpawnManager {
         MobSpawnSettings settings = plugin.settings().azicave().mobSpawn();
         List<Location> players = exploringPlayers(session);
         List<LivingEntity> mobs = livingMobs(session.world());
-        int depth = players.stream().mapToInt(session::resolveDepth).max().orElse(0);
+        int depth = session.getMaxDepth();
         return new MobStatus(depth, players.size(), settings.scaledMaxAlivePower(depth, players.size()),
                 currentAlivePower(mobs, settings), mobs.size(), Map.copyOf(aliveCounts(mobs)));
     }
@@ -150,7 +150,7 @@ public final class MobSpawnManager {
             return;
         }
         Random random = ThreadLocalRandom.current();
-        int depth = players.stream().mapToInt(session::resolveDepth).max().orElse(0);
+        int depth = session.getMaxDepth();
         int maxAlivePower = mobSpawnSettings.scaledMaxAlivePower(depth, players.size());
         int alivePower = currentAlivePower(mobs, mobSpawnSettings);
         Map<MobProfile, Integer> aliveCounts = aliveCounts(mobs);
