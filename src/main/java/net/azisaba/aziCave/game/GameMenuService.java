@@ -193,18 +193,34 @@ public final class GameMenuService implements Listener {
         }
         player.sendActionBar(plugin.messages().component("journey.preparing", "&7ダンジョンを用意している…"));
         player.playSound(player.getLocation(), Sound.BLOCK_ENCHANTMENT_TABLE_USE, 0.55F, 1.15F);
-        // Give the client a tick to display the transition before synchronous world generation.
+        // Give the client time to display the transition before starting generation.
         org.bukkit.Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!player.isOnline() || plugin.gameSessionManager().sessionForPlayer(player.getUniqueId()).orElse(null) != expected
                     || current.currentRound() != round || !DepartureGuard.canPrepare(current.state(), current.roundState())
                     || !player.getWorld().equals(current.world()) || player.isDead()
                     || !current.homeArea().contains(player.getLocation().getBlockX(), player.getLocation().getBlockY(), player.getLocation().getBlockZ())
                     || !departureOffers.remove(player.getUniqueId(), offer)) return;
-            player.performCommand("azicave round start " + depth + " --confirm");
-            if (current.state() == SessionState.IN_ROUND
-                    && current.currentRound() == DepartureGuard.dayToStart(round)) {
-                plugin.portalService().enterDungeon(player, current);
+            if (!player.hasPermission("azicave.session")) {
+                player.sendMessage(plugin.messages().prefixed("commands.permission.round", "&cAziCaveの日程を操作する権限がありません。"));
+                return;
             }
+            plugin.gameSessionManager().startRoundAsync(current, depth).whenComplete((result, ex) -> {
+                if (!player.isOnline()) return;
+                if (ex != null) {
+                    Throwable cause = ex;
+                    while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) cause = cause.getCause();
+                    player.sendMessage(plugin.messages().prefixed("round.error.start-failed", "&c探索開始に失敗しました: {reason}", "reason", cause.getMessage()));
+                    plugin.getLogger().warning("Round start failed: " + cause.getMessage());
+                    return;
+                }
+                if (plugin.gameSessionManager().sessionForPlayer(player.getUniqueId()).orElse(null) == current
+                        && current.roundState() == RoundState.ACTIVE && current.currentRound() == DepartureGuard.dayToStart(round)
+                        && player.getWorld().equals(current.world()) && !player.isDead()) {
+                    player.sendMessage(plugin.messages().prefixed("journey.started", "&7ダンジョンの準備ができた。{round}日目 / 危険度 {depth}",
+                            "round", current.currentRound(), "depth", plugin.settings().gui().describe(depth)));
+                    plugin.portalService().enterDungeon(player, current);
+                }
+            });
         }, 2L);
     }
 

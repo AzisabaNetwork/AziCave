@@ -82,6 +82,7 @@ public final class AziCave extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (dungeonGenerator != null) dungeonGenerator.shutdown();
         if (journeyDisplayService != null) journeyDisplayService.shutdown();
         if (roundTimeService != null) roundTimeService.shutdown();
         if (gameSessionManager != null) {
@@ -117,6 +118,9 @@ public final class AziCave extends JavaPlugin {
     }
 
     public void reloadPluginState() {
+        if (dungeonGenerator != null && dungeonGenerator.isGenerating()) {
+            throw new IllegalStateException("Cannot reload during dungeon generation");
+        }
         reloadConfig();
         this.messageService = new MessageService(this);
         this.settings = SettingsLoader.load(this);

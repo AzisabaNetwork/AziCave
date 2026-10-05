@@ -15,6 +15,7 @@ import com.sk89q.worldedit.session.ClipboardHolder;
 import net.azisaba.aziCave.debug.DebugLogger;
 import net.azisaba.aziCave.dungeon.PlacedPiece;
 import net.azisaba.aziCave.math.IntVector3;
+import net.azisaba.aziCave.math.BlockBox;
 import org.bukkit.World;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -48,6 +49,19 @@ public final class WorldEditSchematicAdapter implements SchematicAdapter {
     @Override
     public void clearCache() {
         clipboardCache.clear();
+    }
+
+    @Override
+    public boolean supportsAsyncPaste() {
+        return plugin.getServer().getPluginManager().isPluginEnabled("FastAsyncWorldEdit");
+    }
+
+    @Override
+    public BlockBox pasteBounds(PlacedPiece piece) throws SchematicPlacementException {
+        BlockVector3 size = loadClipboard(piece.template().schematicPath()).getDimensions();
+        boolean rotated = piece.rotation().degrees() % 180 != 0;
+        return new BlockBox(piece.origin(), piece.origin().add(new IntVector3(
+                (rotated ? size.z() : size.x()) - 1, size.y() - 1, (rotated ? size.x() : size.z()) - 1)));
     }
 
     @Override

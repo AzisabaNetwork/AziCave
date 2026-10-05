@@ -7,8 +7,6 @@ import net.azisaba.aziCave.dungeon.PlacedPiece;
 import net.azisaba.aziCave.entity.MobSpawnManager;
 import net.azisaba.aziCave.math.BlockBox;
 import net.azisaba.aziCave.math.IntVector3;
-import net.azisaba.aziCave.schematic.SchematicPlacementException;
-import net.azisaba.aziCave.template.TemplateLoadException;
 import net.azisaba.aziCave.statistics.ExitReason;
 import net.azisaba.aziCave.statistics.PlayerSnapshot;
 import org.bukkit.Bukkit;
@@ -466,32 +464,23 @@ public final class GameSessionManager {
         return session;
     }
 
-    public DungeonGenerationResult startRound(GameSession session, int maxDepth)
-            throws TemplateLoadException, SchematicPlacementException {
+    public CompletableFuture<DungeonGenerationResult> startRoundAsync(GameSession session, int maxDepth) {
         if (!Bukkit.isPrimaryThread()) {
-            try {
-                return Bukkit.getScheduler().callSyncMethod(
-                        plugin,
-                        () -> startRound(session, maxDepth)
-                ).get();
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                throw fail("round.error.interrupted", "&c探索開始が中断されました。");
-            } catch (ExecutionException ex) {
-                Throwable cause = ex.getCause();
-                if (cause instanceof TemplateLoadException templateLoadException) {
-                    throw templateLoadException;
-                }
-                if (cause instanceof SchematicPlacementException schematicPlacementException) {
-                    throw schematicPlacementException;
-                }
-                if (cause instanceof RuntimeException runtimeException) {
-                    throw runtimeException;
-                }
-                throw fail("round.error.failed", "&c探索開始に失敗しました。");
-            }
+            CompletableFuture<DungeonGenerationResult> future = new CompletableFuture<>();
+            Bukkit.getScheduler().runTask(plugin, () -> startRoundAsync(session, maxDepth).whenComplete((result, ex) -> {
+                if (ex == null) future.complete(result);
+                else future.completeExceptionally(ex);
+            }));
+            return future;
         }
+        try {
+            return prepareRound(session, maxDepth);
+        } catch (RuntimeException ex) {
+            return CompletableFuture.failedFuture(ex);
+        }
+    }
 
+    private CompletableFuture<DungeonGenerationResult> prepareRound(GameSession session, int maxDepth) {
         if (!sessionsById.containsKey(session.sessionId())) {
             throw fail("session.error.inactive", "&cセッションはすでに終了しています。");
         }
@@ -515,71 +504,76 @@ public final class GameSessionManager {
         BlockBox previousBounds = session.currentDungeonBounds();
         List<PlacedPiece> previousPieces = session.placedPieces();
 
-        session.setState(SessionState.IN_ROUND);
         session.setRoundState(RoundState.PREPARING);
         session.setCurrentRound(DepartureGuard.dayToStart(previousRound));
         IntVector3 origin = allocateDungeonOrigin(session);
         session.setCurrentDungeonOrigin(origin);
-        try {
-            DungeonGenerationResult result = plugin.dungeonGenerator().generate(
-                    new GenerationExecutionRequest(
-                            plugin.settings().generation().templatePatterns(),
-                            plugin.settings().generation().startPieceId(),
-                            session.world(),
-                            origin,
-                            ThreadLocalRandom.current().nextLong(),
+        return plugin.dungeonGenerator().generateAsync(
+                new GenerationExecutionRequest(plugin.settings().generation().templatePatterns(),
+                        plugin.settings().generation().startPieceId(), session.world(), origin,
+                        ThreadLocalRandom.current().nextLong(), maxDepth), plugin.settings())
+                .thenApply(result -> {
+                    if (sessionsById.get(session.sessionId()) != session || session.state() == SessionState.CLOSING
+                            || session.roundState() != RoundState.PREPARING) {
+                        throw new java.util.concurrent.CancellationException("Session ended during generation");
+                    }
+                    List<UUID> readyParticipants = participants.stream()
+                            .filter(session::isOnlineMember)
+                            .filter(playerId -> {
+                                Player player = Bukkit.getPlayer(playerId);
+                                return player != null && !player.isDead() && player.getWorld().equals(session.world());
+                            }).toList();
+                    if (readyParticipants.isEmpty()) {
+                        throw fail("round.error.no-online-members", "&c探索を開始できるオンラインメンバーがいません。");
+                    }
+                    session.setPlacedPieces(result.placedPieces());
+                    session.setCurrentDungeonBounds(resolveDungeonBounds(result.placedPieces(), origin));
+                    session.setMaxDepth(maxDepth);
+                    session.setActiveParticipants(new java.util.HashSet<>(readyParticipants));
+                    session.setRoundState(RoundState.ACTIVE);
+                    session.setState(SessionState.IN_ROUND);
+                    plugin.portalService().installRoundPortals(session);
+                    plugin.roundTimeService().beginRound(session);
+                    if (session.currentRound() == 1) {
+                        Bukkit.getScheduler().runTaskLater(
+                                plugin,
+                                () -> announceRoundStart(session),
+                                FIRST_ROUND_TITLE_DELAY_TICKS
+                        );
+                    }
+
+                    for (UUID playerId : readyParticipants) {
+                        Player player = Bukkit.getPlayer(playerId);
+                        if (player == null) {
+                            session.markDead(playerId);
+                            continue;
+                        }
+                        setRoundSurvival(player);
+                        initializeSessionPlayerState(player);
+                    }
+                    plugin.statisticsService().recordRoundReached(
+                            session.runId(),
+                            readyParticipants.stream()
+                                    .map(Bukkit::getPlayer)
+                                    .filter(java.util.Objects::nonNull)
+                                    .map(PlayerSnapshot::from)
+                                    .toList(),
+                            session.currentRound(),
                             maxDepth
-                    ),
-                    plugin.settings()
-            );
-
-            session.setPlacedPieces(result.placedPieces());
-            session.setCurrentDungeonBounds(resolveDungeonBounds(result.placedPieces(), origin));
-            session.setMaxDepth(maxDepth);
-            session.setActiveParticipants(new java.util.HashSet<>(participants));
-            session.setRoundState(RoundState.ACTIVE);
-            session.setState(SessionState.IN_ROUND);
-            plugin.portalService().installRoundPortals(session);
-            plugin.roundTimeService().beginRound(session);
-            if (session.currentRound() == 1) {
-                Bukkit.getScheduler().runTaskLater(
-                        plugin,
-                        () -> announceRoundStart(session),
-                        FIRST_ROUND_TITLE_DELAY_TICKS
-                );
-            }
-
-            for (UUID playerId : participants) {
-                Player player = Bukkit.getPlayer(playerId);
-                if (player == null) {
-                    session.markDead(playerId);
-                    continue;
-                }
-                setRoundSurvival(player);
-                initializeSessionPlayerState(player);
-            }
-            plugin.statisticsService().recordRoundReached(
-                    session.runId(),
-                    participants.stream()
-                            .map(Bukkit::getPlayer)
-                            .filter(java.util.Objects::nonNull)
-                            .map(PlayerSnapshot::from)
-                            .toList(),
-                    session.currentRound(),
-                    maxDepth
-            );
-            updateRoundAfterAliveChange(session);
-            return result;
-        } catch (TemplateLoadException | SchematicPlacementException | RuntimeException ex) {
-            session.setState(previousState);
-            session.setRoundState(previousRoundState);
-            session.setCurrentRound(previousRound);
-            session.setCurrentDungeonOrigin(previousOrigin);
-            session.setCurrentDungeonBounds(previousBounds);
-            session.setPlacedPieces(previousPieces);
-            plugin.portalService().clearRoundPortals(session);
-            throw ex;
-        }
+                    );
+                    updateRoundAfterAliveChange(session);
+                    return result;
+                }).whenComplete((result, ex) -> {
+                    if (ex == null || sessionsById.get(session.sessionId()) != session || session.state() == SessionState.CLOSING) return;
+                    session.setState(previousState);
+                    session.setRoundState(previousRoundState);
+                    session.setCurrentRound(previousRound);
+                    session.setCurrentDungeonOrigin(previousOrigin);
+                    session.setCurrentDungeonBounds(previousBounds);
+                    session.setPlacedPieces(previousPieces);
+                    plugin.portalService().clearRoundPortals(session);
+                    plugin.roundTimeService().endRound(session);
+                });
     }
 
     public RoundEndResult endRound(Player player) {
@@ -704,6 +698,15 @@ public final class GameSessionManager {
         }
 
         session.setState(SessionState.CLOSING);
+        if (plugin.dungeonGenerator().isGenerating(session.world())) {
+            if (!shuttingDown) {
+                plugin.dungeonGenerator().cancelGeneration(session.world()).thenRun(() -> {
+                    if (plugin.isEnabled()) endSession(session);
+                });
+            }
+            // During plugin disable, leave an in-flight edit's world loaded; startup cleanup removes leftovers.
+            return !shuttingDown;
+        }
         UUID worldId = session.world().getUID();
         File worldFolder = session.world().getWorldFolder();
         List<UUID> onlineMembers = List.copyOf(session.onlineMembers());

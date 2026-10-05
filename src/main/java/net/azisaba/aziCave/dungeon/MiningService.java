@@ -34,6 +34,8 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.BooleanSupplier;
 
 public final class MiningService implements Listener {
     private static final int MAX_TRIGGER_HEIGHT_ABOVE_FLOOR = 4;
@@ -62,139 +64,153 @@ public final class MiningService implements Listener {
         triggers.clear();
     }
 
-    public void populate(
+    public CompletableFuture<Void> populateAsync(
             World world,
             List<PlacedPiece> pieces,
             Random random,
             ChestPopulator chestPopulator,
-            List<MiningPreparedGimmick> preparedGimmicks
+            List<MiningPreparedGimmick> preparedGimmicks,
+            BooleanSupplier active
     ) {
         MiningSettings settings = plugin.settings().azicave().mining();
         if (!settings.enabled() || pieces.isEmpty()) {
             plugin.debugLogger().log("mining", "populate_skipped", Map.of(
-                    "enabled", settings.enabled(),
-                    "pieces", pieces.size(),
-                    "world", world.getName()
-            ));
-            return;
+                    "enabled", settings.enabled(), "pieces", pieces.size(), "world", world.getName()));
+            return CompletableFuture.completedFuture(null);
         }
         clearWorld(world);
         plugin.debugLogger().log("mining", "populate_begin", Map.of(
-                "oresPerPiece", settings.oresPerPiece(),
-                "pieces", pieces.size(),
-                "preparedGimmicks", preparedGimmicks.size(),
-                "triggersPerDungeon", settings.triggersPerDungeon(),
-                "world", world.getName()
-        ));
-
+                "oresPerPiece", settings.oresPerPiece(), "pieces", pieces.size(),
+                "preparedGimmicks", preparedGimmicks.size(), "triggersPerDungeon", settings.triggersPerDungeon(),
+                "world", world.getName()));
         Set<BlockKey> reservedBlocks = reservedPreparedBlocks(world, preparedGimmicks);
-        int oresPlaced = 0;
+        SurfaceCandidates surfaces = new SurfaceCandidates(world, pieces);
+        List<BooleanSupplier> steps = new ArrayList<>();
+        int[] oresPlaced = {0};
+        int[] placed = {0};
         for (PlacedPiece piece : pieces) {
             for (int index = 0; index < settings.oresPerPiece(); index++) {
-                MiningOreSettings ore = selectOre(settings.ores(), piece.depth(), random);
-                if (ore != null) {
-                    SurfacePlacement placement = placeSurfaceBlock(world, piece.worldBounds(), ore.material(), settings.backingMaterial(), random, reservedBlocks);
-                    if (placement != null) {
-                        oresPlaced++;
-                        plugin.debugLogger().log("mining", "ore_placed", Map.of(
+                steps.add(surfaces.before(() -> {
+                    MiningOreSettings ore = selectOre(settings.ores(), piece.depth(), random);
+                    if (ore != null) {
+                        SurfacePlacement placement = placeSurfaceBlock(world, piece.worldBounds(), ore.material(), settings.backingMaterial(), random, reservedBlocks, surfaces);
+                        if (placement != null) {
+                            oresPlaced[0]++;
+                            plugin.debugLogger().log("mining", "ore_placed", Map.of(
+                                    "depth", piece.depth(),
+                                    "material", ore.material(),
+                                    "piece", piece.template().id(),
+                                    "x", placement.block().getX(),
+                                    "y", placement.block().getY(),
+                                    "z", placement.block().getZ()
+                            ));
+                        }
+                    } else {
+                        plugin.debugLogger().log("mining", "ore_skipped_no_definition", Map.of(
                                 "depth", piece.depth(),
-                                "material", ore.material(),
-                                "piece", piece.template().id(),
-                                "x", placement.block().getX(),
-                                "y", placement.block().getY(),
-                                "z", placement.block().getZ()
+                                "piece", piece.template().id()
                         ));
                     }
-                } else {
-                    plugin.debugLogger().log("mining", "ore_skipped_no_definition", Map.of(
-                            "depth", piece.depth(),
-                            "piece", piece.template().id()
-                    ));
-                }
+                }));
             }
         }
-
         List<PlacedPiece> ordered = new ArrayList<>(pieces);
         ordered.sort(Comparator.comparingInt(PlacedPiece::depth));
         List<MiningPreparedGimmick> remainingPreparedGimmicks = new ArrayList<>(preparedGimmicks);
-        int placed = registerFixedPreparedGimmicks(remainingPreparedGimmicks, chestPopulator);
-        placed += installRedstoneDoorGimmicks(remainingPreparedGimmicks);
-        placed += registerRandomPreparedGimmicks(
-                world,
-                ordered,
-                remainingPreparedGimmicks,
-                chestPopulator,
-                reservedBlocks,
-                random,
-                settings,
-                settings.triggersPerDungeon() - placed
-        );
-        for (PlacedPiece piece : ordered) {
-            if (placed >= settings.triggersPerDungeon()) {
-                break;
-            }
-            SurfacePlacement placement = placeTriggerSurfaceBlock(world, piece.worldBounds(), settings.triggerMaterial(), settings.backingMaterial(), random, reservedBlocks);
-            if (placement == null) {
-                plugin.debugLogger().log("mining", "trigger_no_surface", Map.of(
-                        "depth", piece.depth(),
-                        "piece", piece.template().id()
-                ));
-                continue;
-            }
-            Optional<TriggerGimmick> preparedGimmick = selectPreparedGimmick(
-                    remainingPreparedGimmicks,
-                    placement.block(),
-                    settings.minTriggerGimmickDistance(),
-                    chestPopulator
-            );
-            TriggerTarget target = preparedGimmick.isPresent()
-                    ? null
-                    : selectTriggerTarget(world, pieces, piece, placement.block(), settings.minTriggerGimmickDistance()).orElse(null);
-            if (preparedGimmick.isEmpty() && target == null) {
-                placement.block().setType(settings.backingMaterial(), false);
-                plugin.debugLogger().log("mining", "trigger_no_distant_target", Map.of(
-                        "depth", piece.depth(),
-                        "minDistance", settings.minTriggerGimmickDistance(),
-                        "piece", piece.template().id(),
-                        "x", placement.block().getX(),
-                        "y", placement.block().getY(),
-                        "z", placement.block().getZ()
-                ));
-                continue;
-            }
-            TriggerGimmick gimmick = preparedGimmick.orElseGet(() -> createGimmick(target, random, chestPopulator));
-            if (gimmick == null) {
-                placement.block().setType(settings.backingMaterial(), false);
-                plugin.debugLogger().log("mining", "trigger_skipped_no_weighted_gimmick", Map.of(
-                        "depth", piece.depth(),
-                        "piece", piece.template().id(),
-                        "x", placement.block().getX(),
-                        "y", placement.block().getY(),
-                        "z", placement.block().getZ()
-                ));
-                continue;
-            }
-            triggers.put(BlockKey.of(placement.block()), gimmick);
-            placed++;
-            plugin.debugLogger().log("mining", "trigger_placed", Map.of(
-                    "gimmick", gimmick.type(),
-                    "distance", gimmick.path().size() - 1,
-                    "piece", piece.template().id(),
-                    "targetPiece", gimmick.targetPiece().template().id(),
-                    "targetDepth", gimmick.targetPiece().depth(),
-                    "target", format(gimmick.target()),
-                    "x", placement.block().getX(),
-                    "y", placement.block().getY(),
-                    "z", placement.block().getZ()
-            ));
+        for (MiningPreparedGimmick prepared : preparedGimmicks) {
+            steps.add(TickWork.action(() -> {
+                List<MiningPreparedGimmick> single = new ArrayList<>(List.of(prepared));
+                placed[0] += registerFixedPreparedGimmicks(single, chestPopulator);
+                if (single.isEmpty()) {
+                    remainingPreparedGimmicks.remove(prepared);
+                    surfaces.invalidate();
+                }
+            }));
         }
-        plugin.debugLogger().log("mining", "populate_complete", Map.of(
-                "ores", oresPlaced,
-                "preparedRemaining", remainingPreparedGimmicks.size(),
-                "registeredTriggers", triggers.size(),
-                "triggersPlaced", placed,
-                "world", world.getName()
-        ));
+        for (MiningPreparedGimmick prepared : preparedGimmicks) {
+            steps.add(TickWork.action(() -> {
+                if (!remainingPreparedGimmicks.contains(prepared)) return;
+                List<MiningPreparedGimmick> single = new ArrayList<>(List.of(prepared));
+                int installed = installRedstoneDoorGimmicks(single);
+                placed[0] += installed;
+                if (installed > 0) surfaces.invalidate();
+                if (single.isEmpty()) remainingPreparedGimmicks.remove(prepared);
+            }));
+        }
+        for (MiningPreparedGimmick prepared : preparedGimmicks) {
+            steps.add(surfaces.before(() -> {
+                if (!remainingPreparedGimmicks.contains(prepared)) return;
+                List<MiningPreparedGimmick> single = new ArrayList<>(List.of(prepared));
+                placed[0] += registerRandomPreparedGimmicks(world, ordered, single, chestPopulator, reservedBlocks,
+                        random, settings, settings.triggersPerDungeon() - placed[0], surfaces);
+                if (single.isEmpty()) remainingPreparedGimmicks.remove(prepared);
+            }));
+        }
+        for (PlacedPiece piece : ordered) {
+            steps.add(surfaces.before(() -> {
+                if (placed[0] >= settings.triggersPerDungeon()) return;
+                SurfacePlacement placement = placeTriggerSurfaceBlock(world, piece.worldBounds(), settings.triggerMaterial(), settings.backingMaterial(), random, reservedBlocks, surfaces);
+                if (placement == null) {
+                    plugin.debugLogger().log("mining", "trigger_no_surface", Map.of(
+                            "depth", piece.depth(),
+                            "piece", piece.template().id()
+                    ));
+                    return;
+                }
+                Optional<TriggerGimmick> preparedGimmick = selectPreparedGimmick(
+                        remainingPreparedGimmicks,
+                        placement.block(),
+                        settings.minTriggerGimmickDistance(),
+                        chestPopulator
+                );
+                TriggerTarget target = preparedGimmick.isPresent()
+                        ? null
+                        : selectTriggerTarget(world, pieces, piece, placement.block(), settings.minTriggerGimmickDistance()).orElse(null);
+                if (preparedGimmick.isEmpty() && target == null) {
+                    placement.block().setType(settings.backingMaterial(), false);
+                    surfaces.invalidate();
+                    plugin.debugLogger().log("mining", "trigger_no_distant_target", Map.of(
+                            "depth", piece.depth(),
+                            "minDistance", settings.minTriggerGimmickDistance(),
+                            "piece", piece.template().id(),
+                            "x", placement.block().getX(),
+                            "y", placement.block().getY(),
+                            "z", placement.block().getZ()
+                    ));
+                    return;
+                }
+                TriggerGimmick gimmick = preparedGimmick.orElseGet(() -> createGimmick(target, random, chestPopulator));
+                if (gimmick == null) {
+                    placement.block().setType(settings.backingMaterial(), false);
+                    surfaces.invalidate();
+                    plugin.debugLogger().log("mining", "trigger_skipped_no_weighted_gimmick", Map.of(
+                            "depth", piece.depth(),
+                            "piece", piece.template().id(),
+                            "x", placement.block().getX(),
+                            "y", placement.block().getY(),
+                            "z", placement.block().getZ()
+                    ));
+                    return;
+                }
+                triggers.put(BlockKey.of(placement.block()), gimmick);
+                placed[0]++;
+                plugin.debugLogger().log("mining", "trigger_placed", Map.of(
+                        "gimmick", gimmick.type(),
+                        "distance", gimmick.path().size() - 1,
+                        "piece", piece.template().id(),
+                        "targetPiece", gimmick.targetPiece().template().id(),
+                        "targetDepth", gimmick.targetPiece().depth(),
+                        "target", format(gimmick.target()),
+                        "x", placement.block().getX(),
+                        "y", placement.block().getY(),
+                        "z", placement.block().getZ()
+                ));
+            }));
+        }
+        steps.add(TickWork.action(() -> plugin.debugLogger().log("mining", "populate_complete", Map.of(
+                "ores", oresPlaced[0], "preparedRemaining", remainingPreparedGimmicks.size(),
+                "registeredTriggers", triggers.size(), "triggersPlaced", placed[0], "world", world.getName()))));
+        return TickWork.run(plugin, active, steps);
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -229,9 +245,10 @@ public final class MiningService implements Listener {
             Material material,
             Material backingMaterial,
             Random random,
-            Set<BlockKey> excludedBlocks
+            Set<BlockKey> excludedBlocks,
+            SurfaceCandidates surfaces
     ) {
-        List<SurfacePlacement> candidates = surfacePlacements(world, bounds, excludedBlocks);
+        List<SurfacePlacement> candidates = surfaces.get(bounds, excludedBlocks);
         if (candidates.isEmpty()) {
             plugin.debugLogger().log("mining", "no_surface", Map.of(
                     "bounds", bounds,
@@ -240,7 +257,7 @@ public final class MiningService implements Listener {
             return null;
         }
         SurfacePlacement placement = candidates.get(random.nextInt(candidates.size()));
-        placeSurfacePlacement(placement, material, backingMaterial);
+        placeSurfacePlacement(placement, material, backingMaterial, surfaces);
         return placement;
     }
 
@@ -250,9 +267,10 @@ public final class MiningService implements Listener {
             Material material,
             Material backingMaterial,
             Random random,
-            Set<BlockKey> excludedBlocks
+            Set<BlockKey> excludedBlocks,
+            SurfaceCandidates surfaces
     ) {
-        List<SurfacePlacement> candidates = triggerSurfacePlacements(world, bounds, excludedBlocks);
+        List<SurfacePlacement> candidates = triggerSurfacePlacements(bounds, excludedBlocks, surfaces);
         if (candidates.isEmpty()) {
             plugin.debugLogger().log("mining", "no_reachable_trigger_surface", Map.of(
                     "bounds", bounds,
@@ -261,46 +279,102 @@ public final class MiningService implements Listener {
             return null;
         }
         SurfacePlacement placement = candidates.get(random.nextInt(candidates.size()));
-        placeSurfacePlacement(placement, material, backingMaterial);
+        placeSurfacePlacement(placement, material, backingMaterial, surfaces);
         return placement;
     }
 
-    private void placeSurfacePlacement(SurfacePlacement placement, Material material, Material backingMaterial) {
+    private void placeSurfacePlacement(SurfacePlacement placement, Material material, Material backingMaterial, SurfaceCandidates surfaces) {
         placement.block().setType(material, false);
         Block backing = placement.block().getRelative(placement.face().getOppositeFace());
         if (backing.isPassable()) {
             backing.setType(backingMaterial, false);
+            surfaces.invalidate();
+        }
+        if (!material.isSolid() || !material.isOccluding() || placement.block().getState() instanceof org.bukkit.block.Container) {
+            surfaces.invalidate();
         }
     }
 
-    private List<SurfacePlacement> surfacePlacements(World world, BlockBox bounds, Set<BlockKey> excludedBlocks) {
-        List<SurfacePlacement> placements = new ArrayList<>();
-        for (int x = bounds.minX() + 1; x <= bounds.maxX() - 1; x++) {
-            for (int y = bounds.minY() + 1; y <= bounds.maxY() - 1; y++) {
-                for (int z = bounds.minZ() + 1; z <= bounds.maxZ() - 1; z++) {
-                    Block air = world.getBlockAt(x, y, z);
-                    if (!air.isPassable()) {
-                        continue;
+    private List<SurfacePlacement> triggerSurfacePlacements(BlockBox bounds, Set<BlockKey> excludedBlocks, SurfaceCandidates surfaces) {
+        return surfaces.get(bounds, excludedBlocks).stream().filter(this::isReachableTriggerSurface).toList();
+    }
+
+    private final class SurfaceCandidates {
+        private final World world;
+        private final List<BlockBox> bounds;
+        private final Map<BlockBox, List<SurfacePlacement>> cached = new HashMap<>();
+        private SurfaceScan scan;
+        private int next;
+
+        private SurfaceCandidates(World world, List<PlacedPiece> pieces) {
+            this.world = world;
+            this.bounds = pieces.stream().map(PlacedPiece::worldBounds).distinct().toList();
+        }
+
+        private void invalidate() {
+            cached.clear();
+            scan = null;
+            next = 0;
+        }
+
+        private BooleanSupplier before(Runnable action) {
+            return () -> {
+                if (next < bounds.size()) {
+                    if (scan == null) scan = new SurfaceScan(world, bounds.get(next));
+                    if (scan.advance()) {
+                        cached.put(bounds.get(next++), scan.placements);
+                        scan = null;
                     }
+                    return false;
+                }
+                action.run();
+                return true;
+            };
+        }
+
+        private List<SurfacePlacement> get(BlockBox box, Set<BlockKey> excluded) {
+            return cached.get(box).stream().filter(placement -> !excluded.contains(BlockKey.of(placement.block()))).toList();
+        }
+    }
+
+    private final class SurfaceScan {
+        private final World world;
+        private final BlockBox bounds;
+        private final List<SurfacePlacement> placements = new ArrayList<>();
+        private int x;
+        private int y;
+        private int z;
+
+        private SurfaceScan(World world, BlockBox bounds) {
+            this.world = world;
+            this.bounds = bounds;
+            x = bounds.minX() + 1;
+            y = bounds.minY() + 1;
+            z = bounds.minZ() + 1;
+        }
+
+        private boolean advance() {
+            if (bounds.sizeX() < 3 || bounds.sizeY() < 3 || bounds.sizeZ() < 3) return true;
+            for (int count = 0; count < 64 && x < bounds.maxX(); count++) {
+                Block air = world.getBlockAt(x, y, z);
+                if (air.isPassable()) {
                     for (BlockFace face : FACES) {
                         Block target = air.getRelative(face);
-                        if (excludedBlocks.contains(BlockKey.of(target))) {
-                            continue;
-                        }
                         if (isGoodSurfaceTarget(target, face.getOppositeFace())) {
                             placements.add(new SurfacePlacement(target, face.getOppositeFace()));
                         }
                     }
                 }
+                if (++z >= bounds.maxZ()) {
+                    z = bounds.minZ() + 1;
+                    if (++y >= bounds.maxY()) {
+                        y = bounds.minY() + 1;
+                        x++;
+                    }
+                }
             }
+            return x >= bounds.maxX();
         }
-        return placements;
-    }
-
-    private List<SurfacePlacement> triggerSurfacePlacements(World world, BlockBox bounds, Set<BlockKey> excludedBlocks) {
-        return surfacePlacements(world, bounds, excludedBlocks).stream()
-                .filter(this::isReachableTriggerSurface)
-                .toList();
     }
 
     private boolean isReachableTriggerSurface(SurfacePlacement placement) {
@@ -329,23 +403,13 @@ public final class MiningService implements Listener {
     }
 
     private boolean isGoodSurfaceTarget(Block block, BlockFace airFace) {
-        if (!block.getType().isSolid() || !block.getType().isOccluding()) {
-            return false;
-        }
-        if (block.getState() instanceof org.bukkit.block.Container) {
-            return false;
-        }
-        int passableFaces = 0;
+        Material type = block.getType();
+        if (!type.isSolid() || !type.isOccluding()) return false;
+        // The caller already checked that airFace is passable.
         for (BlockFace face : FACES) {
-            if (block.getRelative(face).isPassable()) {
-                passableFaces++;
-            }
+            if (face != airFace && block.getRelative(face).isPassable()) return false;
         }
-        if (passableFaces != 1) {
-            return false;
-        }
-        return block.getRelative(airFace).isPassable()
-                && !block.getRelative(airFace.getOppositeFace()).isPassable();
+        return !(block.getState() instanceof org.bukkit.block.Container);
     }
 
     private Set<BlockKey> reservedPreparedBlocks(World world, List<MiningPreparedGimmick> preparedGimmicks) {
@@ -451,7 +515,8 @@ public final class MiningService implements Listener {
             Set<BlockKey> reservedBlocks,
             Random random,
             MiningSettings settings,
-            int maxRegistrations
+            int maxRegistrations,
+            SurfaceCandidates surfaces
     ) {
         if (maxRegistrations <= 0) {
             return 0;
@@ -470,11 +535,12 @@ public final class MiningService implements Listener {
             }
 
             if (prepared.triggerSideSources().size() == 2) {
-                if (registerSideTriggerPair(world, pieces, prepared, chestPopulator, reservedBlocks, random, settings)) {
+                if (registerSideTriggerPair(world, pieces, prepared, chestPopulator, reservedBlocks, random, settings, surfaces)) {
                     preparedGimmicks.remove(prepared);
                     registered++;
                 } else {
                     resolveUntriggeredConnectionGimmick(prepared);
+                    surfaces.invalidate();
                     preparedGimmicks.remove(prepared);
                 }
                 continue;
@@ -486,7 +552,8 @@ public final class MiningService implements Listener {
                     prepared,
                     reservedBlocks,
                     random,
-                    settings.minTriggerGimmickDistance()
+                    settings.minTriggerGimmickDistance(),
+                    surfaces
             );
             if (selected.isEmpty()) {
                 plugin.debugLogger().log("mining", "prepared_gimmick_no_trigger_surface", Map.of(
@@ -499,7 +566,7 @@ public final class MiningService implements Listener {
             }
 
             PreparedTriggerPlacement triggerPlacement = selected.get();
-            placeSurfacePlacement(triggerPlacement.placement(), settings.triggerMaterial(), settings.backingMaterial());
+            placeSurfacePlacement(triggerPlacement.placement(), settings.triggerMaterial(), settings.backingMaterial(), surfaces);
             Block triggerBlock = triggerPlacement.placement().block();
             List<Location> path = completePreparedPath(triggerPlacement.path(), prepared);
             triggers.put(BlockKey.of(triggerBlock), new TriggerGimmick(
@@ -535,7 +602,8 @@ public final class MiningService implements Listener {
             ChestPopulator chestPopulator,
             Set<BlockKey> reservedBlocks,
             Random random,
-            MiningSettings settings
+            MiningSettings settings,
+            SurfaceCandidates surfaces
     ) {
         Set<BlockKey> excludedBlocks = new HashSet<>(reservedBlocks);
         List<PreparedTriggerPlacement> placements = new ArrayList<>();
@@ -549,7 +617,8 @@ public final class MiningService implements Listener {
                     random,
                     settings.minTriggerGimmickDistance(),
                     search,
-                    true
+                    true,
+                    surfaces
             );
             if (selected.isEmpty()) {
                 plugin.debugLogger().log("mining", "prepared_side_trigger_missing", Map.of(
@@ -569,7 +638,7 @@ public final class MiningService implements Listener {
                 .map(placement -> BlockKey.of(placement.placement().block()))
                 .toList();
         for (PreparedTriggerPlacement triggerPlacement : placements) {
-            placeSurfacePlacement(triggerPlacement.placement(), settings.triggerMaterial(), settings.backingMaterial());
+            placeSurfacePlacement(triggerPlacement.placement(), settings.triggerMaterial(), settings.backingMaterial(), surfaces);
             Block triggerBlock = triggerPlacement.placement().block();
             List<Location> path = completePreparedPath(triggerPlacement.path(), prepared);
             triggers.put(BlockKey.of(triggerBlock), new TriggerGimmick(
@@ -635,12 +704,13 @@ public final class MiningService implements Listener {
             MiningPreparedGimmick prepared,
             Set<BlockKey> reservedBlocks,
             Random random,
-            int minDistance
+            int minDistance,
+            SurfaceCandidates surfaces
     ) {
         ReverseChainSearch search = prepared.type() == MiningGimmickType.TUNNEL_BREAKTHROUGH
                 ? reverseTunnelChainSearch(world, prepared)
                 : reversePreparedChainSearch(world, prepared);
-        return selectPreparedTriggerPlacement(world, pieces, prepared, reservedBlocks, random, minDistance, search, false);
+        return selectPreparedTriggerPlacement(world, pieces, prepared, reservedBlocks, random, minDistance, search, false, surfaces);
     }
 
     private Optional<PreparedTriggerPlacement> selectPreparedTriggerPlacement(
@@ -651,22 +721,21 @@ public final class MiningService implements Listener {
             Random random,
             int minDistance,
             ReverseChainSearch search,
-            boolean allowCloserFallback
+            boolean allowCloserFallback,
+            SurfaceCandidates surfaces
     ) {
         if (search.previous().isEmpty()) {
             return Optional.empty();
         }
 
-        List<PreparedTriggerPlacement> preferred = new ArrayList<>();
-        List<PreparedTriggerPlacement> fallback = new ArrayList<>();
+        List<PreparedTriggerCandidate> preferred = new ArrayList<>();
+        List<PreparedTriggerCandidate> fallback = new ArrayList<>();
         for (PlacedPiece piece : pieces) {
-            for (SurfacePlacement placement : triggerSurfacePlacements(world, piece.worldBounds(), reservedBlocks)) {
-                List<Location> path = triggerPathToReverseSearch(world, placement.block(), search.previous());
-                if (path.isEmpty()) {
-                    continue;
-                }
-                PreparedTriggerPlacement candidate = new PreparedTriggerPlacement(piece, placement, path);
-                if (path.size() - 1 >= minDistance) {
+            for (SurfacePlacement placement : triggerSurfacePlacements(piece.worldBounds(), reservedBlocks, surfaces)) {
+                BlockKey neighbor = longestReachableNeighbor(placement.block(), search);
+                if (neighbor == null) continue;
+                PreparedTriggerCandidate candidate = new PreparedTriggerCandidate(piece, placement, neighbor, search.distances().get(neighbor) + 1);
+                if (candidate.distance() >= minDistance) {
                     preferred.add(candidate);
                 } else if (allowCloserFallback) {
                     fallback.add(candidate);
@@ -674,21 +743,21 @@ public final class MiningService implements Listener {
             }
         }
         if (!preferred.isEmpty()) {
-            return Optional.of(preferred.get(random.nextInt(preferred.size())));
+            return Optional.of(resolveTriggerCandidate(world, preferred.get(random.nextInt(preferred.size())), search));
         }
         if (!fallback.isEmpty()) {
-            fallback.sort(Comparator.comparingInt((PreparedTriggerPlacement candidate) -> candidate.path().size()).reversed());
-            int longest = fallback.getFirst().path().size();
-            List<PreparedTriggerPlacement> furthest = fallback.stream()
-                    .filter(candidate -> candidate.path().size() == longest)
+            fallback.sort(Comparator.comparingInt(PreparedTriggerCandidate::distance).reversed());
+            int longest = fallback.getFirst().distance();
+            List<PreparedTriggerCandidate> furthest = fallback.stream()
+                    .filter(candidate -> candidate.distance() == longest)
                     .toList();
             plugin.debugLogger().log("mining", "prepared_side_trigger_distance_fallback", Map.of(
-                    "distance", Math.max(0, longest - 1),
+                    "distance", longest,
                     "minDistance", minDistance,
                     "target", format(prepared.target()),
                     "type", prepared.type()
             ));
-            return Optional.of(furthest.get(random.nextInt(furthest.size())));
+            return Optional.of(resolveTriggerCandidate(world, furthest.get(random.nextInt(furthest.size())), search));
         }
         return Optional.empty();
     }
@@ -953,6 +1022,7 @@ public final class MiningService implements Listener {
         Queue<BlockKey> queue = new ArrayDeque<>();
         Set<BlockKey> sources = new HashSet<>();
         Map<BlockKey, BlockKey> previous = new HashMap<>();
+        Map<BlockKey, Integer> distances = new HashMap<>();
         int maxVisited = 4096;
 
         for (Location target : tunnelAirTouchingTargets(world, prepared.carveBoxes())) {
@@ -960,6 +1030,7 @@ public final class MiningService implements Listener {
             if (sources.add(key)) {
                 queue.add(key);
                 previous.put(key, null);
+                distances.put(key, 0);
             }
         }
 
@@ -975,6 +1046,7 @@ public final class MiningService implements Listener {
                     continue;
                 }
                 previous.put(next, current);
+                distances.put(next, distances.get(current) + 1);
                 queue.add(next);
             }
         }
@@ -985,7 +1057,7 @@ public final class MiningService implements Listener {
                 "target", format(prepared.target()),
                 "targetPiece", prepared.targetPiece().template().id()
         ));
-        return new ReverseChainSearch(previous);
+        return new ReverseChainSearch(previous, distances);
     }
 
     private ReverseChainSearch reversePreparedChainSearch(World world, MiningPreparedGimmick prepared) {
@@ -1003,10 +1075,12 @@ public final class MiningService implements Listener {
         BlockKey source = BlockKey.of(sourceLocation.getBlock());
         Queue<BlockKey> queue = new ArrayDeque<>();
         Map<BlockKey, BlockKey> previous = new HashMap<>();
+        Map<BlockKey, Integer> distances = new HashMap<>();
         int maxVisited = 4096;
 
         queue.add(source);
         previous.put(source, null);
+        distances.put(source, 0);
         while (!queue.isEmpty() && previous.size() <= maxVisited) {
             BlockKey current = queue.poll();
             for (BlockFace face : FACES) {
@@ -1019,32 +1093,33 @@ public final class MiningService implements Listener {
                     continue;
                 }
                 previous.put(next, current);
+                distances.put(next, distances.get(current) + 1);
                 queue.add(next);
             }
         }
-        return new ReverseChainSearch(previous);
+        return new ReverseChainSearch(previous, distances);
     }
 
-    private List<Location> triggerPathToReverseSearch(
-            World world,
-            Block triggerBlock,
-            Map<BlockKey, BlockKey> previous
-    ) {
+    private BlockKey longestReachableNeighbor(Block triggerBlock, ReverseChainSearch search) {
         BlockKey triggerKey = BlockKey.of(triggerBlock);
-        List<Location> best = List.of();
+        BlockKey best = null;
+        int longest = -1;
         for (BlockFace face : FACES) {
             BlockKey neighbor = triggerKey.relative(face);
-            if (!previous.containsKey(neighbor)) {
-                continue;
-            }
-            List<Location> path = rebuildPath(world, previous, neighbor);
-            Collections.reverse(path);
-            path.addFirst(triggerBlock.getLocation().toCenterLocation());
-            if (best.isEmpty() || path.size() > best.size()) {
-                best = path;
+            Integer distance = search.distances().get(neighbor);
+            if (distance != null && distance > longest) {
+                best = neighbor;
+                longest = distance;
             }
         }
         return best;
+    }
+
+    private PreparedTriggerPlacement resolveTriggerCandidate(World world, PreparedTriggerCandidate candidate, ReverseChainSearch search) {
+        List<Location> path = rebuildPath(world, search.previous(), candidate.neighbor());
+        Collections.reverse(path);
+        path.addFirst(candidate.placement().block().getLocation().toCenterLocation());
+        return new PreparedTriggerPlacement(candidate.piece(), candidate.placement(), path);
     }
 
     private List<Location> tunnelAirTouchingTargets(World world, List<BlockBox> carveBoxes) {
@@ -1396,7 +1471,9 @@ public final class MiningService implements Listener {
     private record PreparedTriggerPlacement(PlacedPiece piece, SurfacePlacement placement, List<Location> path) {
     }
 
-    private record ReverseChainSearch(Map<BlockKey, BlockKey> previous) {
+    private record PreparedTriggerCandidate(PlacedPiece piece, SurfacePlacement placement, BlockKey neighbor, int distance) {}
+
+    private record ReverseChainSearch(Map<BlockKey, BlockKey> previous, Map<BlockKey, Integer> distances) {
     }
 
     private record TriggerGimmick(

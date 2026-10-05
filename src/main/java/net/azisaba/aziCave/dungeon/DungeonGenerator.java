@@ -18,6 +18,7 @@ import net.azisaba.aziCave.template.LoadedTemplates;
 import net.azisaba.aziCave.template.PieceTemplate;
 import net.azisaba.aziCave.template.TemplateLoadException;
 import net.azisaba.aziCave.template.TemplateManager;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -37,6 +38,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.function.BooleanSupplier;
 
 public final class DungeonGenerator {
     private static final List<BlockFace> TUNNEL_TRIGGER_FACES = List.of(
@@ -56,6 +63,7 @@ public final class DungeonGenerator {
     private final TreasurePopulator treasurePopulator;
     private final TrapPopulator trapPopulator;
     private final MiningService miningService;
+    private final Map<UUID, GenerationJob> pending = new HashMap<>();
 
     public DungeonGenerator(
             JavaPlugin plugin,
@@ -77,7 +85,238 @@ public final class DungeonGenerator {
         this.miningService = miningService;
     }
 
-    public DungeonGenerationResult generate(GenerationExecutionRequest request, PluginSettings settings)
+    public CompletableFuture<DungeonGenerationResult> generateAsync(GenerationExecutionRequest request, PluginSettings settings) {
+        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Generation must start on the server thread");
+        if (pending.containsKey(request.world().getUID())) {
+            return CompletableFuture.failedFuture(new IllegalStateException("このワールドはダンジョンを生成中です。"));
+        }
+        try {
+            GenerationJob job = new GenerationJob(request, settings, plan(request, settings));
+            pending.put(request.world().getUID(), job);
+            try {
+                job.start();
+            } catch (RuntimeException ex) {
+                job.finish(null, ex);
+            }
+            return job.result;
+        } catch (TemplateLoadException | SchematicPlacementException | RuntimeException ex) {
+            return CompletableFuture.failedFuture(ex);
+        }
+    }
+
+    public boolean isGenerating() {
+        return !pending.isEmpty();
+    }
+
+    public boolean isGenerating(World world) {
+        return pending.containsKey(world.getUID());
+    }
+
+    public CompletableFuture<Void> cancelGeneration(World world) {
+        GenerationJob job = pending.get(world.getUID());
+        if (job == null) return CompletableFuture.completedFuture(null);
+        job.cancelled = true;
+        if (job.tickStage) job.stage.cancel(false);
+        // An in-flight FAWE paste must finish before the world can be unloaded.
+        return job.result.handle((ignored, ex) -> null);
+    }
+
+    public void shutdown() {
+        for (GenerationJob job : List.copyOf(pending.values())) {
+            job.cancelled = true;
+            job.releaseTickets();
+            if (job.tickStage) job.stage.cancel(false);
+            job.result.completeExceptionally(new CancellationException("Plugin disabled"));
+        }
+    }
+
+    private <T> CompletableFuture<T> async(Callable<T> work) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            T value;
+            try {
+                value = work.call();
+            } catch (Exception ex) {
+                if (plugin.isEnabled()) Bukkit.getScheduler().runTask(plugin, () -> future.completeExceptionally(ex));
+                return;
+            }
+            if (plugin.isEnabled()) Bukkit.getScheduler().runTask(plugin, () -> future.complete(value));
+        });
+        return future;
+    }
+
+    private final class GenerationJob {
+        private final GenerationExecutionRequest request;
+        private final PluginSettings settings;
+        private final GenerationLayout layout;
+        private final CompletableFuture<DungeonGenerationResult> result = new CompletableFuture<>();
+        private final Set<Long> tickets = new HashSet<>();
+        private CompletableFuture<?> stage;
+        private boolean tickStage;
+        private volatile boolean cancelled;
+        private PreparedConnectionGimmicks prepared;
+        private int treasures;
+        private int traps;
+
+        private GenerationJob(GenerationExecutionRequest request, PluginSettings settings, GenerationLayout layout) {
+            this.request = request;
+            this.settings = settings;
+            this.layout = layout;
+        }
+
+        private boolean active() {
+            return !cancelled && plugin.isEnabled() && Bukkit.getWorld(request.world().getUID()) == request.world();
+        }
+
+        private void checkActive() {
+            if (!active()) throw new CancellationException("Dungeon generation cancelled");
+        }
+
+        private void start() {
+            // Read/cache schematic dimensions off-thread, including bounds that differ from the template YAML.
+            async(() -> {
+                Set<Long> chunks = new LinkedHashSet<>();
+                for (PlacedPiece piece : layout.pieces()) {
+                    if (cancelled) throw new CancellationException("Dungeon generation cancelled");
+                    addChunks(chunks, piece.worldBounds());
+                    addChunks(chunks, schematicAdapter.pasteBounds(piece));
+                }
+                return List.copyOf(chunks);
+            }).thenCompose(chunks -> preload(chunks, 0))
+                    .thenCompose(ignored -> paste())
+                    .thenCompose(ignored -> decorate())
+                    .thenCompose(ignored -> {
+                        checkActive();
+                        if (miningService == null) return CompletableFuture.completedFuture(null);
+                        tickStage = true;
+                        stage = miningService.populateAsync(request.world(), layout.pieces(), layout.random(),
+                                chestPopulator, prepared.targets(), this::active);
+                        return stage.whenComplete((value, ex) -> tickStage = false).thenApply(value -> (Void) null);
+                    }).whenComplete((ignored, ex) -> {
+                        if (!plugin.isEnabled()) return;
+                        try {
+                            if (ex != null) throw new CompletionException(ex);
+                            checkActive();
+                            Location spawn = resolveSpawnLocation(request.world(), layout.startPiece());
+                            debugLogger.log("generation", "complete", Map.of(
+                                    "connections", layout.connections().size(), "maxDepth", layout.maxDepth(),
+                                    "pieces", layout.pieces().size(), "seed", request.seed(), "target", layout.targetPieceCount(),
+                                    "traps", traps, "treasures", treasures, "world", request.world().getName()));
+                            finish(new DungeonGenerationResult(request.seed(), layout.targetPieceCount(), layout.pieces().size(),
+                                    layout.connections().size(), List.copyOf(layout.pieces()), spawn), null);
+                        } catch (RuntimeException failure) {
+                            finish(null, failure);
+                        }
+                    });
+        }
+
+        private void addChunks(Set<Long> chunks, BlockBox box) {
+            // Include a chunk of padding for neighbor checks, redstone wiring and FAWE heightmaps.
+            for (int x = (box.minX() >> 4) - 1; x <= (box.maxX() >> 4) + 1; x++) {
+                for (int z = (box.minZ() >> 4) - 1; z <= (box.maxZ() >> 4) + 1; z++) {
+                    chunks.add(((long) x << 32) | (z & 0xffffffffL));
+                }
+            }
+        }
+
+        private CompletableFuture<Void> preload(List<Long> chunks, int offset) {
+            checkActive();
+            if (offset >= chunks.size()) return CompletableFuture.completedFuture(null);
+            List<CompletableFuture<?>> loads = new ArrayList<>();
+            int end = Math.min(offset + 8, chunks.size());
+            for (int index = offset; index < end; index++) {
+                long key = chunks.get(index);
+                int x = (int) (key >> 32);
+                int z = (int) key;
+                loads.add(request.world().getChunkAtAsync(x, z, true, false).thenAccept(chunk -> {
+                    if (active() && request.world().addPluginChunkTicket(x, z, plugin)) tickets.add(key);
+                }));
+            }
+            return CompletableFuture.allOf(loads.toArray(CompletableFuture[]::new))
+                    .thenCompose(ignored -> preload(chunks, end));
+        }
+
+        private CompletableFuture<Void> paste() {
+            checkActive();
+            if (schematicAdapter.supportsAsyncPaste()) {
+                return async(() -> {
+                    for (PlacedPiece piece : layout.pieces()) {
+                        if (cancelled) throw new CancellationException("Dungeon generation cancelled");
+                        schematicAdapter.paste(request.world(), piece);
+                    }
+                    return null;
+                });
+            }
+            List<BooleanSupplier> steps = new ArrayList<>();
+            for (PlacedPiece piece : layout.pieces()) {
+                steps.add(TickWork.action(() -> {
+                    try {
+                        schematicAdapter.paste(request.world(), piece);
+                    } catch (SchematicPlacementException ex) {
+                        throw new CompletionException(ex);
+                    }
+                }));
+            }
+            return ticks(steps);
+        }
+
+        private CompletableFuture<Void> ticks(List<BooleanSupplier> steps) {
+            checkActive();
+            tickStage = true;
+            stage = TickWork.run(plugin, this::active, steps);
+            return stage.whenComplete((ignored, ex) -> tickStage = false).thenApply(ignored -> (Void) null);
+        }
+
+        private CompletableFuture<Void> decorate() {
+            checkActive();
+            prepared = miningService == null
+                    ? new PreparedConnectionGimmicks(Set.of(), Set.of(), Set.of(), List.of())
+                    : prepareConnectionGimmicks(request.world(), layout.connections(), layout.random(), settings.azicave().mining());
+            List<BooleanSupplier> steps = new ArrayList<>();
+            for (PieceConnection connection : layout.connections()) {
+                if (prepared.tunnelConnections().contains(connection)) continue;
+                steps.add(TickWork.action(() -> {
+                    carveConnection(request.world(), connection);
+                    if (prepared.ironDoorConnections().contains(connection) || prepared.redstoneDoorConnections().contains(connection)) {
+                        placeConnectionDoor(request.world(), connection, Material.IRON_DOOR, layout.random());
+                    } else {
+                        maybePlaceDoor(request.world(), connection, layout.random(), settings.door());
+                    }
+                }));
+            }
+            for (PlacedPiece piece : layout.pieces()) {
+                steps.add(TickWork.action(() -> {
+                    chestPopulator.populateRoom(request.world(), piece);
+                    treasures += treasurePopulator.populateRoom(request.world(), piece);
+                    traps += trapPopulator.populateRoom(request.world(), piece);
+                }));
+            }
+            steps.add(TickWork.action(() -> {
+                treasures += populateMissingTreasures(request.world(), layout.pieces(), settings.azicave().treasure().minPerDungeon(), treasures, layout.random());
+                traps += populateMissingTraps(request.world(), layout.pieces(), settings.azicave().traps().minPerDungeon(), traps, layout.random());
+            }));
+            return ticks(steps);
+        }
+
+        private void releaseTickets() {
+            for (long key : tickets) request.world().removePluginChunkTicket((int) (key >> 32), (int) key, plugin);
+            tickets.clear();
+        }
+
+        private void finish(DungeonGenerationResult value, Throwable failure) {
+            cancelled = true;
+            releaseTickets();
+            if (failure != null && miningService != null) miningService.clearWorld(request.world());
+            pending.remove(request.world().getUID(), this);
+            if (failure == null) result.complete(value);
+            else result.completeExceptionally(failure);
+        }
+    }
+
+    private record GenerationLayout(Random random, int maxDepth, int targetPieceCount, PlacedPiece startPiece,
+                                    List<PlacedPiece> pieces, List<PieceConnection> connections) {}
+
+    private GenerationLayout plan(GenerationExecutionRequest request, PluginSettings settings)
             throws TemplateLoadException, SchematicPlacementException {
         if (!schematicAdapter.isAvailable()) {
             throw new SchematicPlacementException("Schematic adapter is unavailable: " + schematicAdapter.describeAvailability());
@@ -141,63 +380,7 @@ public final class DungeonGenerator {
             activateEntrances(attempt.piece, usedEntrances, blockedEntrances, frontiers, random, maxDepth, generation, plan, placedPerDepth);
         }
 
-        for (PlacedPiece piece : pieces) {
-            schematicAdapter.paste(request.world(), piece);
-        }
-
-        List<PieceConnection> allConnections = collectConnections(pieces, connections);
-        PreparedConnectionGimmicks preparedConnectionGimmicks = miningService == null
-                ? new PreparedConnectionGimmicks(Set.of(), Set.of(), Set.of(), List.of())
-                : prepareConnectionGimmicks(request.world(), allConnections, random, settings.azicave().mining());
-        for (PieceConnection connection : allConnections) {
-            if (preparedConnectionGimmicks.tunnelConnections().contains(connection)) {
-                debugLogger.log("mining", "tunnel_reserved", Map.of(
-                        "child", connection.childEntrance().key(),
-                        "parent", connection.parentEntrance().key()
-                ));
-                continue;
-            }
-            carveConnection(request.world(), connection);
-            if (preparedConnectionGimmicks.ironDoorConnections().contains(connection)
-                    || preparedConnectionGimmicks.redstoneDoorConnections().contains(connection)) {
-                placeConnectionDoor(request.world(), connection, Material.IRON_DOOR, random);
-            } else {
-                maybePlaceDoor(request.world(), connection, random, settings.door());
-            }
-        }
-
-        int treasureCount = 0;
-        int trapCount = 0;
-        for (PlacedPiece piece : pieces) {
-            chestPopulator.populateRoom(request.world(), piece);
-            treasureCount += treasurePopulator.populateRoom(request.world(), piece);
-            trapCount += trapPopulator.populateRoom(request.world(), piece);
-        }
-        treasureCount += populateMissingTreasures(request.world(), pieces, settings.azicave().treasure().minPerDungeon(), treasureCount, random);
-        trapCount += populateMissingTraps(request.world(), pieces, settings.azicave().traps().minPerDungeon(), trapCount, random);
-        if (miningService != null) {
-            miningService.populate(request.world(), pieces, random, chestPopulator, preparedConnectionGimmicks.targets());
-        }
-
-        Location spawnLocation = resolveSpawnLocation(request.world(), startPiece);
-        debugLogger.log("generation", "complete", Map.of(
-                "connections", allConnections.size(),
-                "maxDepth", maxDepth,
-                "pieces", pieces.size(),
-                "seed", request.seed(),
-                "target", targetPieceCount,
-                "traps", trapCount,
-                "treasures", treasureCount,
-                "world", request.world().getName()
-        ));
-        return new DungeonGenerationResult(
-                request.seed(),
-                targetPieceCount,
-                pieces.size(),
-                allConnections.size(),
-                List.copyOf(pieces),
-                spawnLocation
-        );
+        return new GenerationLayout(random, maxDepth, targetPieceCount, startPiece, pieces, collectConnections(pieces, connections));
     }
 
     private int populateMissingTreasures(World world, List<PlacedPiece> pieces, int minimum, int current, Random random) {

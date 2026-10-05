@@ -11,12 +11,9 @@ import net.azisaba.aziCave.game.SessionState;
 import net.azisaba.aziCave.entity.MobProfile;
 import net.azisaba.aziCave.config.GenerationSettings;
 import net.azisaba.aziCave.math.BlockBox;
-import net.azisaba.aziCave.dungeon.DungeonGenerationResult;
 import net.azisaba.aziCave.dungeon.GenerationExecutionRequest;
 import net.azisaba.aziCave.math.Direction;
 import net.azisaba.aziCave.math.IntVector3;
-import net.azisaba.aziCave.schematic.SchematicPlacementException;
-import net.azisaba.aziCave.template.TemplateLoadException;
 import net.azisaba.aziCave.statistics.PlayerStatistics;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
@@ -425,16 +422,16 @@ public final class AziCaveCommand implements TabExecutor {
             tell(sender, "round.error.max-depth", "&c危険度は1以上の整数にしてください。");
             return true;
         }
-        try {
-            DungeonGenerationResult result = plugin.gameSessionManager().startRound(session, maxDepth);
-            tell(sender, "journey.started", "&7ダンジョンの準備ができた。{round}日目 / 危険度 {depth}",
-                    "round", session.currentRound(), "depth", plugin.settings().gui().describe(maxDepth));
-        } catch (TemplateLoadException | SchematicPlacementException ex) {
-            tell(sender, "round.error.start-failed", "&c探索開始に失敗しました: {reason}", "reason", ex.getMessage());
-            plugin.getLogger().warning("Round start failed: " + ex.getMessage());
-        } catch (IllegalArgumentException | IllegalStateException ex) {
-            tellRaw(sender, ex.getMessage());
-        }
+        plugin.gameSessionManager().startRoundAsync(session, maxDepth).whenComplete((result, ex) -> {
+            if (ex == null) {
+                tell(sender, "journey.started", "&7ダンジョンの準備ができた。{round}日目 / 危険度 {depth}",
+                        "round", session.currentRound(), "depth", plugin.settings().gui().describe(maxDepth));
+            } else {
+                Throwable cause = unwrapCompletionException(ex);
+                if (cause instanceof IllegalArgumentException || cause instanceof IllegalStateException) tellRaw(sender, cause.getMessage());
+                else reportSessionCreationFailure(sender, "round.error.start-failed", "&c探索開始に失敗しました: {reason}", cause);
+            }
+        });
         return true;
     }
 
@@ -666,28 +663,28 @@ public final class AziCaveCommand implements TabExecutor {
         long seed = parseLong(options.get("seed"), System.currentTimeMillis());
         Integer depthOverride = options.containsKey("depth") ? Math.max(1, parseInt(options.get("depth"), defaults.maxDepth())) : null;
 
-        try {
-            DungeonGenerationResult result = plugin.dungeonGenerator().generate(
-                    new GenerationExecutionRequest(
-                            templatePatterns,
-                            startPieceId,
-                            world,
-                            origin,
-                            seed,
-                            depthOverride
-                    ),
-                    plugin.settings()
-            );
+        plugin.dungeonGenerator().generateAsync(
+                new GenerationExecutionRequest(
+                        templatePatterns,
+                        startPieceId,
+                        world,
+                        origin,
+                        seed,
+                        depthOverride
+                ),
+                plugin.settings()
+        ).whenComplete((result, ex) -> {
+            if (ex != null) {
+                reportSessionCreationFailure(sender, "commands.generate-failed", "&c生成に失敗しました: {reason}", ex);
+                return;
+            }
             tell(sender, "commands.generated", "&aダンジョンを生成しました。seed={seed} ピース={pieces}/{target} 接続={connections} 危険度={depth}",
                     "seed", result.seed(),
                     "pieces", result.placedPieceCount(),
                     "target", result.targetPieceCount(),
                     "connections", result.connectionCount(),
                     "depth", plugin.settings().gui().describe(depthOverride == null ? defaults.maxDepth() : depthOverride));
-        } catch (TemplateLoadException | SchematicPlacementException ex) {
-            tell(sender, "commands.generate-failed", "&c生成に失敗しました: {reason}", "reason", ex.getMessage());
-            plugin.getLogger().warning("Generation failed: " + ex.getMessage());
-        }
+        });
         return true;
     }
 
@@ -699,6 +696,10 @@ public final class AziCaveCommand implements TabExecutor {
         }
         if (args.length != 0) {
             tell(sender, "commands.usage.reload", "&e使い方: /azicave reload");
+            return true;
+        }
+        if (plugin.dungeonGenerator().isGenerating()) {
+            tellRaw(sender, "&cダンジョンの生成が終わってからリロードしてください。");
             return true;
         }
         plugin.reloadPluginState();
