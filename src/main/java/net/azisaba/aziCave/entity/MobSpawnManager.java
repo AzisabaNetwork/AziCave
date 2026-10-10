@@ -79,8 +79,20 @@ public final class MobSpawnManager {
         List<Location> players = exploringPlayers(session);
         List<LivingEntity> mobs = livingMobs(session.world());
         int depth = session.getMaxDepth();
-        return new MobStatus(depth, players.size(), settings.scaledMaxAlivePower(depth, players.size()),
-                currentAlivePower(mobs, settings), mobs.size(), Map.copyOf(aliveCounts(mobs)));
+        MobSpawnSettings.SpawnPressure pressure = spawnPressure(session, settings);
+        return new MobStatus(depth, players.size(), settings.scaledMaxAlivePower(depth, players.size(), pressure),
+                currentAlivePower(mobs, settings), mobs.size(), Map.copyOf(aliveCounts(mobs)),
+                session.daysWithoutDeath(), settings.scaledCountPerInterval(pressure), pressure);
+    }
+
+    private MobSpawnSettings.SpawnPressure spawnPressure(GameSession session, MobSpawnSettings settings) {
+        long quota = 0L;
+        long delivered = 0L;
+        if (settings.pressure().quota().enabled()) {
+            quota = plugin.economyService().quotaForRound(Math.max(1, session.currentRound()));
+            delivered = plugin.economyService().deliveryValue(session);
+        }
+        return settings.pressure().evaluate(delivered, quota, session.daysWithoutDeath());
     }
 
     private static List<LivingEntity> livingMobs(World world) {
@@ -100,7 +112,8 @@ public final class MobSpawnManager {
     }
 
     public record MobStatus(int depth, int exploringPlayers, int maxAlivePower, int alivePower,
-                            int aliveCount, Map<MobProfile, Integer> aliveCounts) {
+                            int aliveCount, Map<MobProfile, Integer> aliveCounts, int daysWithoutDeath,
+                            int countPerInterval, MobSpawnSettings.SpawnPressure pressure) {
     }
 
     static List<Location> exploringPlayers(GameSession session) {
@@ -151,7 +164,9 @@ public final class MobSpawnManager {
         }
         Random random = ThreadLocalRandom.current();
         int depth = session.getMaxDepth();
-        int maxAlivePower = mobSpawnSettings.scaledMaxAlivePower(depth, players.size());
+        MobSpawnSettings.SpawnPressure pressure = spawnPressure(session, mobSpawnSettings);
+        int maxAlivePower = mobSpawnSettings.scaledMaxAlivePower(depth, players.size(), pressure);
+        int countPerInterval = mobSpawnSettings.scaledCountPerInterval(pressure);
         int alivePower = currentAlivePower(mobs, mobSpawnSettings);
         Map<MobProfile, Integer> aliveCounts = aliveCounts(mobs);
         if (plugin.debugLogger().isEnabled()) {
@@ -165,7 +180,9 @@ public final class MobSpawnManager {
                     Map.entry("bossBattle", session.isBossBattleActive()), Map.entry("depth", depth),
                     Map.entry("players", players.size()), Map.entry("baseMaxAlivePower", mobSpawnSettings.maxAlivePower()),
                     Map.entry("maxAlivePower", maxAlivePower), Map.entry("alivePower", alivePower),
-                    Map.entry("aliveCount", mobs.size()), Map.entry("aliveCounts", counts)));
+                    Map.entry("aliveCount", mobs.size()), Map.entry("aliveCounts", counts),
+                    Map.entry("daysWithoutDeath", session.daysWithoutDeath()),
+                    Map.entry("countPerInterval", countPerInterval), Map.entry("pressure", pressure)));
         }
         String skipReason = players.isEmpty() ? "no_exploring_players"
                 : maxAlivePower <= 0 ? "max_power_disabled"
@@ -198,7 +215,7 @@ public final class MobSpawnManager {
         int noLocation = 0;
         int noProfile = 0;
         int failed = 0;
-        for (int index = 0; index < mobSpawnSettings.countPerInterval() && alivePower < maxAlivePower; index++) {
+        for (int index = 0; index < countPerInterval && alivePower < maxAlivePower; index++) {
             int globalRemainingPower = maxAlivePower - alivePower;
             Predicate<Location> allowed = location -> mobSpawnSettings.playerDistance().allows(nearestDistanceSquared(location, players))
                     && remainingSpawnPower(location, nearbyPowers, mobSpawnSettings.nearbyLimit(), globalRemainingPower) > 0;
@@ -208,7 +225,7 @@ public final class MobSpawnManager {
                 continue;
             }
             int remainingPower = remainingSpawnPower(spawnLocation, nearbyPowers, mobSpawnSettings.nearbyLimit(), globalRemainingPower);
-            MobProfile profile = mobSpawnSettings.selectRandomProfile(random, remainingPower, aliveCounts);
+            MobProfile profile = mobSpawnSettings.selectRandomProfile(random, remainingPower, aliveCounts, pressure);
             if (profile == null) {
                 noProfile++;
                 continue;

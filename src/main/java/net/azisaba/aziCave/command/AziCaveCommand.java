@@ -753,6 +753,11 @@ public final class AziCaveCommand implements TabExecutor {
                 "&eセッション {session}: 最大パワー(補正後)={maxPower} 現在パワー={power} モブ数={count} 探索人数={players} 深度={depth}",
                 "session", session.sessionId(), "maxPower", status.maxAlivePower(), "power", status.alivePower(),
                 "count", status.aliveCount(), "players", status.exploringPlayers(), "depth", status.depth());
+        tell(sender, "commands.debug-mobs-pressure",
+                "&e湧き補正: ノルマ段階={quotaLevel} 無死亡段階={noDeathLevel}(連続{days}日) 湧き数/回={spawnCount} パワー倍率={powerMultiplier} 強モブ補正={strongBias}",
+                "quotaLevel", status.pressure().quotaLevel(), "noDeathLevel", status.pressure().noDeathLevel(),
+                "days", status.daysWithoutDeath(), "spawnCount", status.countPerInterval(),
+                "powerMultiplier", status.pressure().powerMultiplier(), "strongBias", status.pressure().strongMobBias());
         for (MobProfile profile : MobProfile.values()) {
             tell(sender, "commands.debug-mobs-profile", "&7{mob}: {count}体",
                     "mob", profile.key(), "count", status.aliveCounts().getOrDefault(profile, 0));

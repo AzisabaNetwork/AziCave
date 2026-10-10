@@ -307,6 +307,38 @@ azicave:
       # min(max-multiplier, 1 + (探索人数 - 1) × multiplier-per-additional-player)
       multiplier-per-additional-player: 0.5
       max-multiplier: 3.0
+  # 湧くmobの種類を抽選するときの多様性補正。同じ種類が多いほど選ばれにくくする。
+  # 抽選の重み = weight × 多様性補正 × 強モブ補正
+  mob-spawn-diversity:
+    enabled: true
+    # 同種が1体以上いる場合の補正 = max(min-multiplier, 1 ÷ (1 + 同種の生存数 × penalty-per-alive))
+    penalty-per-alive: 0.5
+    min-multiplier: 0.1
+    # 同種が1体もいない場合の補正
+    absent-bonus-multiplier: 1.5
+  # チームが好調なときの湧き強化。両方の条件を満たすと効果は重なる。
+  # ・湧き数/回 = mob-spawn-count-per-interval + 各bonusの合計（小数点以下切り捨て）
+  # ・全体上限powerに各max-alive-power-multiplierを掛ける（周囲上限は変えない）
+  # ・強モブ補正 = (mobのpower ÷ 湧き対象の最小power) ^ strong-mob-biasの合計。0なら補正なし
+  mob-spawn-pressure:
+    # 納品箱の中身の価値が、その日のノルマの threshold-percent % 以上のとき発動（段階は0か1）。
+    quota:
+      enabled: true
+      threshold-percent: 100.0
+      count-per-interval-bonus: 1
+      max-alive-power-multiplier: 1.25
+      strong-mob-bias: 1.0
+    # 誰も死亡せずに終えた日が連続 min-days 日以上のとき発動。死亡者が出ると0日に戻る。
+    # 段階 = min(max-levels, 連続無死亡日数 - min-days + 1)
+    # 帰還失敗・寝過ごしによる死亡扱いも死亡に数える。切断・退出・ボス戦のダウンは数えない。
+    no-death:
+      enabled: true
+      min-days: 2
+      max-levels: 3
+      count-per-interval-bonus-per-level: 0.5
+      # 倍率 = 1 + 段階 × この値
+      max-alive-power-multiplier-per-level: 0.15
+      strong-mob-bias-per-level: 0.5
   # 最も近い探索プレイヤーからの直線距離（ブロック）。有効な湧き場所がなければ見送り。
   mob-spawn-player-distance:
     enabled: true
@@ -627,6 +659,12 @@ azicave:
       weight: 3
       power: 4
       max-alive-count: 2
+      # 最大出現数 = min(max, max-alive-count + ノルマ段階 × quota-bonus + 無死亡段階 × no-death-bonus-per-level)
+      # （加算分は小数点以下切り捨て。maxが-1なら上限なし。max-alive-countが-1のmobは常に無制限）
+      max-alive-count-scaling:
+        quota-bonus: 1
+        no-death-bonus-per-level: 0.5
+        max: 4
       max-health: 20.0
       movement-speed: 0.2
       attack-damage: 0.0
@@ -644,6 +682,10 @@ azicave:
       weight: 3
       power: 4
       max-alive-count: 1
+      max-alive-count-scaling:
+        quota-bonus: 0
+        no-death-bonus-per-level: 0.5
+        max: 2
       max-health: 1.0
       movement-speed: 0.4
       attack-damage: 3.0

@@ -619,6 +619,29 @@ public final class SettingsLoader {
                         spawnSettingNumber(config, "power-scaling.players.multiplier-per-additional-player", 0.5D),
                         Math.max(1.0D, spawnSettingNumber(config, "power-scaling.players.max-multiplier", 3.0D))
                 ),
+                new MobSpawnSettings.Diversity(
+                        config.getBoolean("azicave.mob-spawn-diversity.enabled", false),
+                        spawnSettingNumber(config, "diversity.penalty-per-alive", 0.5D),
+                        Math.min(1.0D, spawnSettingNumber(config, "diversity.min-multiplier", 0.1D)),
+                        spawnSettingNumber(config, "diversity.absent-bonus-multiplier", 1.0D)
+                ),
+                new MobSpawnSettings.Pressure(
+                        new MobSpawnSettings.QuotaPressure(
+                                config.getBoolean("azicave.mob-spawn-pressure.quota.enabled", false),
+                                spawnSettingNumber(config, "pressure.quota.threshold-percent", 100.0D),
+                                spawnSettingNumber(config, "pressure.quota.count-per-interval-bonus", 0.0D),
+                                spawnSettingNumber(config, "pressure.quota.max-alive-power-multiplier", 1.0D),
+                                spawnSettingNumber(config, "pressure.quota.strong-mob-bias", 0.0D)
+                        ),
+                        new MobSpawnSettings.NoDeathPressure(
+                                config.getBoolean("azicave.mob-spawn-pressure.no-death.enabled", false),
+                                Math.max(1, config.getInt("azicave.mob-spawn-pressure.no-death.min-days", 2)),
+                                Math.max(0, config.getInt("azicave.mob-spawn-pressure.no-death.max-levels", 3)),
+                                spawnSettingNumber(config, "pressure.no-death.count-per-interval-bonus-per-level", 0.0D),
+                                spawnSettingNumber(config, "pressure.no-death.max-alive-power-multiplier-per-level", 0.0D),
+                                spawnSettingNumber(config, "pressure.no-death.strong-mob-bias-per-level", 0.0D)
+                        )
+                ),
                 new MobSpawnSettings.PlayerDistance(
                         config.getBoolean("azicave.mob-spawn-player-distance.enabled", true),
                         minDistance,
@@ -642,6 +665,10 @@ public final class SettingsLoader {
     private static double spawnSettingNumber(FileConfiguration config, String key, double fallback) {
         double value = config.getDouble("azicave.mob-spawn-" + key, fallback);
         return Double.isFinite(value) ? Math.clamp(value, 0.0D, Math.sqrt(Double.MAX_VALUE)) : fallback;
+    }
+
+    private static double nonNegative(double value) {
+        return Double.isFinite(value) ? Math.max(0.0D, value) : 0.0D;
     }
 
     private static MobSpawnLightSettings loadMobSpawnLightSettings(FileConfiguration config) {
@@ -740,6 +767,11 @@ public final class SettingsLoader {
                             Math.max(0.0D, profileSection.getDouble("movement-speed", defaults.movementSpeed())),
                             Math.max(0.0D, profileSection.getDouble("attack-damage", defaults.attackDamage())),
                             Math.max(-1, profileSection.getInt("max-alive-count", defaults.maxAliveCount())),
+                            new MobProfileSettings.MaxAliveCountScaling(
+                                    nonNegative(profileSection.getDouble("max-alive-count-scaling.quota-bonus", 0.0D)),
+                                    nonNegative(profileSection.getDouble("max-alive-count-scaling.no-death-bonus-per-level", 0.0D)),
+                                    Math.max(-1, profileSection.getInt("max-alive-count-scaling.max", -1))
+                            ),
                             ai,
                             drops
                     );

@@ -46,6 +46,8 @@ public final class GameSession {
     private int maxDepth;
     private long sharedBalance;
     private int consecutiveQuotaMisses;
+    private int daysWithoutDeath;
+    private boolean deathThisRound;
     private BukkitTask mobSpawnTask;
     private BukkitTask idleTimeoutTask;
     private String activeBossBattleId;
@@ -178,6 +180,22 @@ public final class GameSession {
 
     public void setConsecutiveQuotaMisses(int consecutiveQuotaMisses) {
         this.consecutiveQuotaMisses = Math.max(0, consecutiveQuotaMisses);
+    }
+
+    public int daysWithoutDeath() {
+        return daysWithoutDeath;
+    }
+
+    public void recordDeath() {
+        deathThisRound = true;
+        daysWithoutDeath = 0;
+    }
+
+    public void completeDay() {
+        if (!deathThisRound) {
+            daysWithoutDeath++;
+        }
+        deathThisRound = false;
     }
 
     public void addSharedBalance(long amount) {

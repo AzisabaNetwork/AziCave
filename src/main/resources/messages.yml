@@ -385,6 +385,7 @@ commands:
   debug-disabled: "&aAziCaveのデバッグログを無効にしました。"
   debug-mobs-session-only: "&cセッションワールド内で実行してください。"
   debug-mobs-summary: "&eセッション {session}: 最大パワー(補正後)={maxPower} 現在パワー={power} モブ数={count} 探索人数={players} 深度={depth}"
+  debug-mobs-pressure: "&e湧き補正: ノルマ段階={quotaLevel} 無死亡段階={noDeathLevel}(連続{days}日) 湧き数/回={spawnCount} パワー倍率={powerMultiplier} 強モブ補正={strongBias}"
   debug-mobs-profile: "&7{mob}: {count}体"
   debug-spawn-active-only: "&c探索中のセッションワールド内で実行してください。"
   debug-spawned: "&a現在位置に {mob} をスポーンしました。"

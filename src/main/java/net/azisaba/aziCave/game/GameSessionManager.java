@@ -605,6 +605,7 @@ public final class GameSessionManager {
             boolean awakeAtMidnight = midnight && !sleepers.contains(playerId);
             if (missedReturn || awakeAtMidnight) {
                 session.markDead(playerId);
+                session.recordDeath();
                 session.markPendingNextRound(playerId);
                 if (alivePlayer != null) {
                     sendMessage(alivePlayer, m(
@@ -618,6 +619,7 @@ public final class GameSessionManager {
             }
         }
         boolean allPlayersOut = session.alivePlayers().isEmpty();
+        session.completeDay();
 
         closeOnlineMemberInventories(session);
         EconomyService.SellResult delivery = plugin.economyService().sellDeliveryChestLoot(session);
@@ -913,6 +915,7 @@ public final class GameSessionManager {
         boolean wasAlive = session.alivePlayers().contains(player.getUniqueId());
         session.markDead(player.getUniqueId());
         if (wasAlive) {
+            session.recordDeath();
             plugin.statisticsService().recordDeath(
                     session.runId(),
                     player,

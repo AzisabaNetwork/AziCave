@@ -59,6 +59,7 @@ public enum MobProfile {
                 movementSpeed,
                 attackDamage,
                 maxAliveCount,
+                MobProfileSettings.MaxAliveCountScaling.NONE,
                 new MobAiSettings(true),
                 defaultDropsFor(key)
         );
