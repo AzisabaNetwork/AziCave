@@ -70,9 +70,11 @@ public final class MiningService implements Listener {
             Random random,
             ChestPopulator chestPopulator,
             List<MiningPreparedGimmick> preparedGimmicks,
+            int maxDepth,
             BooleanSupplier active
     ) {
         MiningSettings settings = plugin.settings().azicave().mining();
+        int maxTriggers = settings.triggersForDepth(maxDepth);
         if (!settings.enabled() || pieces.isEmpty()) {
             plugin.debugLogger().log("mining", "populate_skipped", Map.of(
                     "enabled", settings.enabled(), "pieces", pieces.size(), "world", world.getName()));
@@ -81,7 +83,7 @@ public final class MiningService implements Listener {
         clearWorld(world);
         plugin.debugLogger().log("mining", "populate_begin", Map.of(
                 "oresPerPiece", settings.oresPerPiece(), "pieces", pieces.size(),
-                "preparedGimmicks", preparedGimmicks.size(), "triggersPerDungeon", settings.triggersPerDungeon(),
+                "preparedGimmicks", preparedGimmicks.size(), "triggersPerDungeon", maxTriggers,
                 "world", world.getName()));
         Set<BlockKey> reservedBlocks = reservedPreparedBlocks(world, preparedGimmicks);
         SurfaceCandidates surfaces = new SurfaceCandidates(world, pieces);
@@ -142,13 +144,13 @@ public final class MiningService implements Listener {
                 if (!remainingPreparedGimmicks.contains(prepared)) return;
                 List<MiningPreparedGimmick> single = new ArrayList<>(List.of(prepared));
                 placed[0] += registerRandomPreparedGimmicks(world, ordered, single, chestPopulator, reservedBlocks,
-                        random, settings, settings.triggersPerDungeon() - placed[0], surfaces);
+                        random, settings, maxTriggers - placed[0], surfaces);
                 if (single.isEmpty()) remainingPreparedGimmicks.remove(prepared);
             }));
         }
         for (PlacedPiece piece : ordered) {
             steps.add(surfaces.before(() -> {
-                if (placed[0] >= settings.triggersPerDungeon()) return;
+                if (placed[0] >= maxTriggers) return;
                 SurfacePlacement placement = placeTriggerSurfaceBlock(world, piece.worldBounds(), settings.triggerMaterial(), settings.backingMaterial(), random, reservedBlocks, surfaces);
                 if (placement == null) {
                     plugin.debugLogger().log("mining", "trigger_no_surface", Map.of(

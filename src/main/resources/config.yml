@@ -528,7 +528,10 @@ azicave:
   mining:
     enabled: true
     ores-per-piece: 1
-    triggers-per-dungeon: 4
+    # ギミック数 = min(max-triggers-per-dungeon, triggers-per-dungeon + ダンジョンのdepth × triggers-per-depth)（小数点以下切り捨て）
+    triggers-per-dungeon: 1
+    triggers-per-depth: 0.5
+    max-triggers-per-dungeon: 8
     backing-material: STONE
     trigger-material: CHISELED_DEEPSLATE
     min-trigger-gimmick-distance: 16

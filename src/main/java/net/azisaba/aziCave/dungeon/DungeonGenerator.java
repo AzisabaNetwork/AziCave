@@ -190,7 +190,7 @@ public final class DungeonGenerator {
                         if (miningService == null) return CompletableFuture.completedFuture(null);
                         tickStage = true;
                         stage = miningService.populateAsync(request.world(), layout.pieces(), layout.random(),
-                                chestPopulator, prepared.targets(), this::active);
+                                chestPopulator, prepared.targets(), layout.maxDepth(), this::active);
                         return stage.whenComplete((value, ex) -> tickStage = false).thenApply(value -> (Void) null);
                     }).whenComplete((ignored, ex) -> {
                         if (!plugin.isEnabled()) return;
@@ -271,7 +271,7 @@ public final class DungeonGenerator {
             checkActive();
             prepared = miningService == null
                     ? new PreparedConnectionGimmicks(Set.of(), Set.of(), Set.of(), List.of())
-                    : prepareConnectionGimmicks(request.world(), layout.connections(), layout.random(), settings.azicave().mining());
+                    : prepareConnectionGimmicks(request.world(), layout.connections(), layout.random(), settings.azicave().mining(), layout.maxDepth());
             List<BooleanSupplier> steps = new ArrayList<>();
             for (PieceConnection connection : layout.connections()) {
                 if (prepared.tunnelConnections().contains(connection)) continue;
@@ -427,8 +427,9 @@ public final class DungeonGenerator {
         return spawned;
     }
 
-    private PreparedConnectionGimmicks prepareConnectionGimmicks(World world, List<PieceConnection> connections, Random random, MiningSettings settings) {
-        if (!settings.enabled() || settings.triggersPerDungeon() <= 0) {
+    private PreparedConnectionGimmicks prepareConnectionGimmicks(World world, List<PieceConnection> connections, Random random, MiningSettings settings, int maxDepth) {
+        int maxTargets = settings.triggersForDepth(maxDepth);
+        if (!settings.enabled() || maxTargets <= 0) {
             return new PreparedConnectionGimmicks(Set.of(), Set.of(), Set.of(), List.of());
         }
 
@@ -437,7 +438,6 @@ public final class DungeonGenerator {
         Set<PieceConnection> ironDoorConnections = new LinkedHashSet<>();
         Set<PieceConnection> redstoneDoorConnections = new LinkedHashSet<>();
         List<MiningPreparedGimmick> targets = new ArrayList<>();
-        int maxTargets = settings.triggersPerDungeon();
 
         while (targets.size() < maxTargets && !candidates.isEmpty()) {
             ConnectionGimmickCandidate candidate = selectConnectionGimmick(candidates, random);

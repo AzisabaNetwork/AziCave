@@ -410,10 +410,13 @@ public final class SettingsLoader {
     private static MiningSettings loadMiningSettings(JavaPlugin plugin, FileConfiguration config) {
         Material backing = materialOr(config.getString("azicave.mining.backing-material"), Material.STONE);
         Material trigger = materialOr(config.getString("azicave.mining.trigger-material"), Material.CHISELED_DEEPSLATE);
+        double triggersPerDepth = config.getDouble("azicave.mining.triggers-per-depth", 0.0D);
         return new MiningSettings(
                 config.getBoolean("azicave.mining.enabled", true),
                 Math.max(0, config.getInt("azicave.mining.ores-per-piece", 2)),
                 Math.max(0, config.getInt("azicave.mining.triggers-per-dungeon", 2)),
+                Double.isFinite(triggersPerDepth) ? Math.max(0.0D, triggersPerDepth) : 0.0D,
+                Math.max(0, config.getInt("azicave.mining.max-triggers-per-dungeon", Integer.MAX_VALUE)),
                 backing.isBlock() ? backing : Material.STONE,
                 trigger.isBlock() ? trigger : Material.CHISELED_DEEPSLATE,
                 Math.max(1, config.getInt("azicave.mining.min-trigger-gimmick-distance", 16)),
