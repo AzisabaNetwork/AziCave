@@ -25,19 +25,8 @@ door:
   material: SPRUCE_DOOR
 debug:
   enabled: false
-database:
-  # MariaDB/MySQL persistence. Keep disabled until valid credentials are configured.
-  enabled: false
-  host: 127.0.0.1
-  port: 3306
-  name: azicave
-  username: azicave
-  password: "change-me"
-  use-ssl: false
-  maximum-pool-size: 4
-  connection-timeout-millis: 5000
 leaderboard:
-  # Enable after database.enabled is configured successfully.
+  # Enable after "enabled" in database.yml is configured successfully.
   enabled: false
   # Calendar periods use this timezone; timestamps are stored in UTC.
   timezone: Asia/Tokyo

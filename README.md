@@ -339,19 +339,25 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX ON azicave.* TO 'azic
 FLUSH PRIVILEGES;
 ```
 
-接続情報とTextDisplayの配置は `config.yml` で設定します。テーブルとインデックスはプラグイン起動時に自動作成されます。
+接続情報は `database.yml`、TextDisplayの配置は `config.yml` で設定します。テーブルとインデックスはプラグイン起動時に自動作成されます。`database.yml` が無く、`config.yml` に旧形式の `database:` セクションが残っている場合は、起動時に自動で `database.yml` へ移行されます。
+
+`database.yml`:
 
 ```yaml
-database:
-  enabled: true
-  host: 127.0.0.1
-  port: 3306
-  name: azicave
-  username: azicave
-  password: "replace-with-a-strong-password"
-  use-ssl: false
-  maximum-pool-size: 4
-  connection-timeout-millis: 5000
+enabled: true
+host: 127.0.0.1
+port: 3306
+name: azicave
+username: azicave
+password: "replace-with-a-strong-password"
+use-ssl: false
+maximum-pool-size: 4
+connection-timeout-millis: 5000
+```
+
+`config.yml`:
+
+```yaml
 leaderboard:
   enabled: true
   timezone: Asia/Tokyo

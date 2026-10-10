@@ -1,0 +1,10 @@
+# MariaDB/MySQL persistence. Keep disabled until valid credentials are configured.
+enabled: false
+host: 127.0.0.1
+port: 3306
+name: azicave
+username: azicave
+password: "change-me"
+use-ssl: false
+maximum-pool-size: 4
+connection-timeout-millis: 5000

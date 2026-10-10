@@ -7,9 +7,12 @@ import net.azisaba.aziCave.statistics.RankingPeriod;
 import org.bukkit.Material;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionType;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.time.DateTimeException;
 import java.time.ZoneId;
@@ -21,6 +24,8 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class SettingsLoader {
+    private static final String DATABASE_FILE = "database.yml";
+
     private SettingsLoader() {
     }
 
@@ -73,7 +78,7 @@ public final class SettingsLoader {
                         doorMaterial
                 ),
                 config.getBoolean("debug.enabled", false),
-                loadDatabaseSettings(config),
+                loadDatabaseSettings(plugin, config),
                 loadLeaderboardSettings(plugin, config),
                 loadSessionSettings(plugin, config),
                 loadHomeSettings(config),
@@ -96,18 +101,45 @@ public final class SettingsLoader {
         );
     }
 
-    private static DatabaseSettings loadDatabaseSettings(FileConfiguration config) {
+    private static DatabaseSettings loadDatabaseSettings(JavaPlugin plugin, FileConfiguration config) {
+        ConfigurationSection database = loadDatabaseConfig(plugin, config);
         return new DatabaseSettings(
-                config.getBoolean("database.enabled", false),
-                requireText(config.getString("database.host"), "127.0.0.1"),
-                clampInt(config.getInt("database.port", 3306), 1, 65_535),
-                requireText(config.getString("database.name"), "azicave"),
-                requireText(config.getString("database.username"), "azicave"),
-                config.getString("database.password", ""),
-                config.getBoolean("database.use-ssl", false),
-                clampInt(config.getInt("database.maximum-pool-size", 4), 1, 32),
-                Math.max(250L, config.getLong("database.connection-timeout-millis", 5_000L))
+                database.getBoolean("enabled", false),
+                requireText(database.getString("host"), "127.0.0.1"),
+                clampInt(database.getInt("port", 3306), 1, 65_535),
+                requireText(database.getString("name"), "azicave"),
+                requireText(database.getString("username"), "azicave"),
+                database.getString("password", ""),
+                database.getBoolean("use-ssl", false),
+                clampInt(database.getInt("maximum-pool-size", 4), 1, 32),
+                Math.max(250L, database.getLong("connection-timeout-millis", 5_000L))
         );
+    }
+
+    private static ConfigurationSection loadDatabaseConfig(JavaPlugin plugin, FileConfiguration config) {
+        File file = new File(plugin.getDataFolder(), DATABASE_FILE);
+        if (!file.exists()) {
+            // Before database.yml existed, these settings lived under "database" in config.yml.
+            ConfigurationSection legacy = config.getConfigurationSection("database");
+            if (legacy == null) {
+                plugin.saveResource(DATABASE_FILE, false);
+            } else {
+                YamlConfiguration migrated = new YamlConfiguration();
+                for (Map.Entry<String, Object> entry : legacy.getValues(false).entrySet()) {
+                    migrated.set(entry.getKey(), entry.getValue());
+                }
+                try {
+                    migrated.save(file);
+                    plugin.getLogger().info("Migrated the database section of config.yml to " + DATABASE_FILE
+                            + ". The section in config.yml is no longer used and can be removed.");
+                } catch (IOException ex) {
+                    plugin.getLogger().warning("Failed to write " + DATABASE_FILE + ": " + ex.getMessage()
+                            + ". Using the database section of config.yml.");
+                    return legacy;
+                }
+            }
+        }
+        return YamlConfiguration.loadConfiguration(file);
     }
 
     private static LeaderboardSettings loadLeaderboardSettings(JavaPlugin plugin, FileConfiguration config) {
