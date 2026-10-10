@@ -98,16 +98,16 @@ journey:
   enabled: true
   # Height above the top of each entrance area; adjust to the home template.
   entrance-height: 1.2
-  view-distance: 16
+  view-distance: 8
 round-timing:
   # A Minecraft day is 24000 ticks (0 = 06:00, 6000 = 12:00, 12000 = 18:00, 18000 = 00:00).
   # Time is paused only on day 0, until the first dungeon departure.
-  start-time-ticks: 0
-  deadline-time-ticks: 18000
+  start-time-ticks: 3000
+  deadline-time-ticks: 15000
   sleep:
     # Skip immediately at 100%; otherwise this percentage must sleep for wait-seconds.
     minimum-percentage: 50
-    wait-seconds: 5
+    wait-seconds: 30
 portals:
   home-to-dungeon:
     area:
@@ -254,8 +254,12 @@ gui:
     levels:
       - desc: "超安全！"
         depth: 3
+      - desc: "安全?"
+        depth: 5
       - desc: "普通"
         depth: 7
+      - desc: "あぶないかも！"
+        depth: 10
       - desc: "超危険！"
         depth: 12
     # Must match one of the levels; otherwise the first level is used.
@@ -275,7 +279,7 @@ boss:
       min-round: 1
       destination:
         x: 0
-        y: 64
+        y: 65
         z: 768
       yaw: 0.0
       return-portal-material: END_PORTAL
@@ -301,8 +305,8 @@ azicave:
     enabled: true
     depth:
       # min(max-multiplier, 1 + ダンジョンのdepth × multiplier-per-level)
-      multiplier-per-level: 0.5
-      max-multiplier: 3.0
+      multiplier-per-level: 2.0
+      max-multiplier: 24.0
     players:
       # min(max-multiplier, 1 + (探索人数 - 1) × multiplier-per-additional-player)
       multiplier-per-additional-player: 0.5
@@ -347,13 +351,13 @@ azicave:
   # 湧き位置が範囲内にある各探索プレイヤーについて、新規mobを含む周囲powerを制限。
   # 集まったプレイヤー間で上限を合算しない。移動してきたmobはこの上限で消去しない。
   mob-spawn-nearby-limit:
-    enabled: true
+    enabled: false
     radius: 32.0
     max-alive-power: 8
   # 全探索プレイヤーから離れたazicave mobのみ整理。近づくと待ち時間リセット。
   # 探索者がいない間も整理する。1秒ごとに判定し、ドロップなしで消去する。
   mob-spawn-despawn:
-    enabled: true
+    enabled: false
     min-player-distance: 64.0
     after-seconds: 60
   mob-spawn-light:
@@ -596,7 +600,7 @@ azicave:
   mobs:
     zombie_brute:
       weight: 6
-      power: 4
+      power: 2
       max-health: 20.0
       movement-speed: 0.3
       attack-damage: 4.0
@@ -619,7 +623,7 @@ azicave:
         tick-interval-ticks: 20
     skeleton_archer:
       weight: 5
-      power: 4
+      power: 2
       max-health: 20.0
       movement-speed: 0.3
       attack-damage: 4.0
@@ -639,7 +643,7 @@ azicave:
         tick-interval-ticks: 20
     powered_creeper:
       weight: 3
-      power: 3
+      power: 2
       max-health: 20.0
       movement-speed: 0.2
       attack-damage: 100.0
@@ -648,16 +652,27 @@ azicave:
         tick-interval-ticks: 20
     mini_enderman:
       weight: 3
-      power: 3
+      power: 2
       max-health: 20.0
-      movement-speed: 0.4
-      attack-damage: 4.5
+      movement-speed: 0.35
+      attack-damage: 3.5
+      drops:
+        - material: IRON_INGOT
+          chance: 1.0
+          min-amount: 1
+          max-amount: 3
+        - material: EMERALD
+          chance: 0.2
+          min-depth: 6
+          min-amount: 1
+          max-amount: 3
+          depth-chance-multiplier: 0.03
       ai:
         enabled: true
         tick-interval-ticks: 20
     copper_golem:
       weight: 3
-      power: 4
+      power: 2
       max-alive-count: 2
       # 最大出現数 = min(max, max-alive-count + ノルマ段階 × quota-bonus + 無死亡段階 × no-death-bonus-per-level)
       # （加算分は小数点以下切り捨て。maxが-1なら上限なし。max-alive-countが-1のmobは常に無制限）
@@ -679,23 +694,29 @@ azicave:
           break-ticks: 40
           goal-speed: 1.0
     creaking:
-      weight: 3
-      power: 4
-      max-alive-count: 1
-      max-alive-count-scaling:
-        quota-bonus: 0
-        no-death-bonus-per-level: 0.5
-        max: 2
+      weight: 2
+      power: 3
+      max-alive-count: 3
       max-health: 1.0
       movement-speed: 0.4
-      attack-damage: 3.0
-      drops: []
+      attack-damage: 6.0
+      drops:
+        - material: IRON_INGOT
+          chance: 1.0
+          min-amount: 1
+          max-amount: 3
+        - material: EMERALD
+          chance: 0.2
+          min-depth: 6
+          min-amount: 1
+          max-amount: 3
+          depth-chance-multiplier: 0.03
       ai:
         enabled: true
         sight-range: 32.0
         forget-after-ticks: 200
         stroll-speed: 1.0
-        door-open-delay-ticks: 30
+        door-open-delay-ticks: 100
   chest:
     base-spawn-chance: 0.0
     depth-multiplier: 0.0
