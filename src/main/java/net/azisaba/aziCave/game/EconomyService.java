@@ -90,7 +90,7 @@ public final class EconomyService {
 
     public QuotaResult evaluateQuota(GameSession session, int roundNumber, SellResult delivery) {
         long quota = quotaForRound(roundNumber);
-        boolean achieved = delivery.totalAmount() >= quota;
+        boolean achieved = session.isQuotaClearedByBoss() || delivery.totalAmount() >= quota;
         EconomyQuotaSettings settings = plugin.settings().economy().quota();
         QuotaProgress progress = QuotaProgress.afterRound(
                 session.consecutiveQuotaMisses(),

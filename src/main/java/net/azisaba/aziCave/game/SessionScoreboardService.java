@@ -18,9 +18,12 @@ import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.ScoreboardManager;
 import org.bukkit.scoreboard.Team;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -29,6 +32,8 @@ import java.util.stream.Collectors;
 public final class SessionScoreboardService {
     private static final String OBJECTIVE_NAME = "azicave";
     private static final String SERVER_ADDRESS = "azisaba.net";
+    // The sidebar shows 15 rows; a boss battle uses 7 for everything else.
+    private static final int MAX_BOSS_PLAYER_ROWS = 8;
     private final AziCave plugin;
     private final GameSessionManager sessionManager;
     private final Map<UUID, Scoreboard> playerScoreboards = new HashMap<>();
@@ -143,12 +148,84 @@ public final class SessionScoreboardService {
     private void show(Player player, GameSession session) {
         ScoreboardManager manager = Bukkit.getScoreboardManager();
         Scoreboard scoreboard = playerScoreboards.computeIfAbsent(player.getUniqueId(), id -> manager.getNewScoreboard());
+        boolean bossBattle = session.isBossBattleActive();
         Objective objective = prepareScoreboard(
                 scoreboard,
-                plugin.messages().text("scoreboard.title", "AziCave"),
+                bossBattle
+                        ? plugin.messages().text("scoreboard.boss.title", "&5ボス戦")
+                        : plugin.messages().text("scoreboard.title", "AziCave"),
                 Bukkit.getOnlinePlayers().stream().map(Player::getName).collect(Collectors.toSet())
         );
+        updateLines(scoreboard, objective, bossBattle ? bossBattleLines(session, player) : roundLines(session, player));
 
+        if (player.getScoreboard() != scoreboard) {
+            player.setScoreboard(scoreboard);
+        }
+    }
+
+    private Map<String, Integer> bossBattleLines(GameSession session, Player viewer) {
+        List<UUID> participants = new ArrayList<>(session.alivePlayers());
+        participants.addAll(session.deadPlayers());
+        List<String> playerRows = participants.stream()
+                .map(playerId -> bossPlayerRow(session, playerId))
+                .filter(row -> row != null)
+                .sorted(Comparator.comparing(BossPlayerRow::name, String.CASE_INSENSITIVE_ORDER))
+                .map(BossPlayerRow::text)
+                .collect(Collectors.toCollection(ArrayList::new));
+        if (playerRows.size() > MAX_BOSS_PLAYER_ROWS) {
+            int hidden = playerRows.size() - (MAX_BOSS_PLAYER_ROWS - 1);
+            playerRows.subList(MAX_BOSS_PLAYER_ROWS - 1, playerRows.size()).clear();
+            playerRows.add(ChatColor.GRAY + plugin.messages().format("scoreboard.boss.more", "…他 {count}人", "count", hidden));
+        }
+
+        List<String> rows = new ArrayList<>();
+        rows.add(ChatColor.GOLD + plugin.messages().format(
+                "scoreboard.day",
+                "{round}日目",
+                "round", session.currentRound()
+        ));
+        rows.add(label("boss.alive", "生存") + session.alivePlayers().size() + " / " + participants.size());
+        rows.add(ChatColor.DARK_GRAY.toString());
+        rows.addAll(playerRows);
+        rows.add(ChatColor.BLACK.toString());
+        rows.add(label("goal", "目標") + bossGoal(session, viewer));
+        rows.add(ChatColor.DARK_AQUA.toString());
+        rows.add(ChatColor.AQUA + SERVER_ADDRESS);
+
+        Map<String, Integer> lines = new HashMap<>();
+        for (int index = 0; index < rows.size(); index++) {
+            lines.put(rows.get(index), rows.size() - 1 - index);
+        }
+        return lines;
+    }
+
+    private BossPlayerRow bossPlayerRow(GameSession session, UUID playerId) {
+        Player member = Bukkit.getPlayer(playerId);
+        String name = member != null ? member.getName() : Bukkit.getOfflinePlayer(playerId).getName();
+        if (name == null) {
+            return null;
+        }
+        if (session.alivePlayers().contains(playerId) && member != null) {
+            return new BossPlayerRow(name, ChatColor.GREEN + "● " + ChatColor.WHITE + name
+                    + ChatColor.RED + " ❤" + (int) Math.ceil(member.getHealth()));
+        }
+        String status = member == null
+                ? plugin.messages().text("scoreboard.boss.offline", "切断")
+                : plugin.messages().text("scoreboard.boss.down", "ダウン");
+        return new BossPlayerRow(name, ChatColor.RED + "✖ " + ChatColor.GRAY + name + ChatColor.DARK_GRAY + " " + status);
+    }
+
+    private String bossGoal(GameSession session, Player viewer) {
+        if (session.isBossDefeated()) {
+            return plugin.messages().text("scoreboard.goals.enter-return-portal", "帰還ポータルに入る");
+        }
+        if (session.deadPlayers().contains(viewer.getUniqueId())) {
+            return plugin.messages().text("scoreboard.goals.wait-revive", "仲間の蘇生を待つ");
+        }
+        return plugin.messages().text("scoreboard.goals.defeat-boss", "ボスを倒す");
+    }
+
+    private Map<String, Integer> roundLines(GameSession session, Player player) {
         Map<String, Integer> lines = new HashMap<>();
         int quotaRound = DepartureGuard.dayToStart(session.currentRound());
         long quota = plugin.economyService().quotaForRound(quotaRound);
@@ -163,7 +240,9 @@ public final class SessionScoreboardService {
                 "round", session.currentRound()
         ), 9);
         lines.put(label("shared-money", "共有資金") + session.sharedBalance(), 8);
-        lines.put(label("delivery-quota", "納品 / ノルマ") + delivered + " / " + quota, 7);
+        lines.put(label("delivery-quota", "納品 / ノルマ") + (session.isQuotaClearedByBoss()
+                ? ChatColor.GREEN + plugin.messages().text("scoreboard.boss.quota-cleared", "ボス討伐で達成")
+                : delivered + " / " + quota), 7);
         lines.put(label("villager-anger", "村人の怒り") + AngerGauge.render(session.consecutiveQuotaMisses(), maxMisses), 6);
         String time = allAlivePlayersInDungeon(session) ? "??:??" : RoundClock.format(session.world().getTime());
         lines.put(label("time", "時刻") + time, 5);
@@ -177,11 +256,7 @@ public final class SessionScoreboardService {
         }
         lines.put(ChatColor.DARK_AQUA.toString(), 1);
         lines.put(ChatColor.AQUA + SERVER_ADDRESS, 0);
-        updateLines(scoreboard, objective, lines);
-
-        if (player.getScoreboard() != scoreboard) {
-            player.setScoreboard(scoreboard);
-        }
+        return lines;
     }
 
     static Objective prepareScoreboard(Scoreboard scoreboard, String title, Set<String> onlineNames) {
@@ -326,6 +401,12 @@ public final class SessionScoreboardService {
         if (!session.alivePlayers().contains(player.getUniqueId())) {
             return new Guidance("", plugin.messages().text("scoreboard.next-actions.wait-next-round", "翌日を待つ"));
         }
+        if (session.isQuotaClearedByBoss()) {
+            return new Guidance(
+                    plugin.messages().text("scoreboard.goals.quota-achieved", "ノルマ達成"),
+                    player.isSleeping() ? "" : plugin.messages().text("scoreboard.next-actions.sleep", "ベッドで休む")
+            );
+        }
         if (!isInHomeArea(session, player)) {
             if (plugin.roundTimeService().remainingTicks(session) <= 3_000L) {
                 return new Guidance(
@@ -376,6 +457,9 @@ public final class SessionScoreboardService {
             }
         }
         return false;
+    }
+
+    private record BossPlayerRow(String name, String text) {
     }
 
     private record Guidance(String goal, String next) {

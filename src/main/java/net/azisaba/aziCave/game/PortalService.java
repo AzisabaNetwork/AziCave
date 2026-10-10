@@ -111,6 +111,10 @@ public final class PortalService implements Listener {
         if (!canUsePortal(session, player)) return;
         RoundPortals roundPortals = roundPortalsBySessionId.get(session.sessionId());
         if (roundPortals == null) {
+            BlockBox entrance = plugin.settings().portals().homeToDungeon().area();
+            if (session.isQuotaClearedByBoss() && contains(entrance, to) && !contains(entrance, event.getFrom())) {
+                player.sendActionBar(plugin.messages().component("boss.no-dungeon-today", "&e今日はボスを倒した。ベッドで休もう。"));
+            }
             return;
         }
 

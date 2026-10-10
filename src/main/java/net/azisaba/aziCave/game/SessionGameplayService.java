@@ -234,7 +234,8 @@ public final class SessionGameplayService implements Listener {
                 "delivery-chest.progress", "&6納品 &f{delivered}&7 / &f{quota}  &7あと &f{missing}",
                 "delivered", after, "quota", quota, "missing", Math.max(0L, quota - after)));
         player.playSound(player.getLocation(), Sound.BLOCK_CHEST_CLOSE, 0.6F, 1.1F);
-        if (before >= quota || after < quota || session.roundState() != RoundState.ACTIVE || session.isBossBattleActive()) {
+        if (before >= quota || after < quota || session.roundState() != RoundState.ACTIVE || session.isBossBattleActive()
+                || session.isQuotaClearedByBoss()) {
             return;
         }
         String title = plugin.messages().text("delivery-chest.title.quota-reached", "&aノルマ達成！");

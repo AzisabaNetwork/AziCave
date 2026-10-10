@@ -53,6 +53,7 @@ public final class GameSession {
     private String activeBossBattleId;
     private Location activeBossDestination;
     private boolean bossDefeated;
+    private boolean quotaClearedByBoss;
 
     public GameSession(
             String sessionId,
@@ -295,6 +296,14 @@ public final class GameSession {
         this.activeBossDestination = null;
         this.bossDefeated = false;
         this.bossDeathLocations.clear();
+    }
+
+    public boolean isQuotaClearedByBoss() {
+        return quotaClearedByBoss;
+    }
+
+    public void setQuotaClearedByBoss(boolean quotaClearedByBoss) {
+        this.quotaClearedByBoss = quotaClearedByBoss;
     }
 
     public boolean isMember(UUID playerId) {

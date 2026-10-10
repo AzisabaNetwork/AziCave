@@ -61,7 +61,12 @@ public final class SessionPlayerHealthListener implements Listener {
             event.getItemsToKeep().clear();
             restoreDropsIfEmpty(event.getDrops(), player.getInventory().getContents());
         }
+        boolean bossBattle = session != null && session.isBossBattleActive();
         sessionManager.handlePlayerDeath(player);
+        if (bossBattle && !session.isBossBattleActive() && session.state() == SessionState.LOBBY) {
+            // This death lost the boss battle; the inventory is rolled back, so nothing may drop.
+            event.getDrops().clear();
+        }
     }
 
     static void restoreDropsIfEmpty(List<ItemStack> drops, ItemStack[] contents) {

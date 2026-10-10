@@ -13,6 +13,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.WorldCreator;
@@ -20,7 +21,10 @@ import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.entity.Firework;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.FireworkMeta;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitTask;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -46,6 +50,7 @@ import java.util.concurrent.ThreadLocalRandom;
 public final class GameSessionManager {
     private static final long ROUND_RESULT_TITLE_TICKS = 100L;
     private static final long FIRST_ROUND_TITLE_DELAY_TICKS = 70L;
+    private static final long BOSS_DREAM_WAKE_TICKS = 60L;
     private static final Map<Attribute, Double> SESSION_ATTRIBUTE_VALUES = Map.of(
             Attribute.MAX_HEALTH, 20.0D,
             Attribute.MOVEMENT_SPEED, 0.1D,
@@ -64,6 +69,7 @@ public final class GameSessionManager {
     private final Map<UUID, PlayerVitalsSnapshot> playerVitalsSnapshots = new HashMap<>();
     private final Map<UUID, Integer> spectatorTargetIndexes = new HashMap<>();
     private final Map<UUID, ObserverSnapshot> observers = new HashMap<>();
+    private final Map<UUID, ItemStack[]> bossInventorySnapshots = new HashMap<>();
     private final Set<UUID> pendingSessionCreations = new HashSet<>();
     private boolean shuttingDown;
 
@@ -137,6 +143,11 @@ public final class GameSessionManager {
                 session.markDead(playerId);
                 continue;
             }
+            ItemStack[] contents = player.getInventory().getContents();
+            for (int index = 0; index < contents.length; index++) {
+                contents[index] = contents[index] == null ? null : contents[index].clone();
+            }
+            bossInventorySnapshots.put(playerId, contents);
             setRoundSurvival(player);
             initializeSessionPlayerState(player);
             player.teleport(destination);
@@ -181,19 +192,142 @@ public final class GameSessionManager {
         if (!session.isBossBattleActive()) {
             return;
         }
+        Set<UUID> participants = new HashSet<>();
         for (UUID playerId : session.onlineMembers()) {
             Player player = Bukkit.getPlayer(playerId);
-            if (player != null) {
-                returnBossPlayerHome(session, player);
+            if (player == null) {
+                continue;
+            }
+            participants.add(playerId);
+            setRoundSurvival(player);
+            initializeSessionPlayerState(player);
+            if (!player.isDead() && !isInHomeArea(session, player.getLocation())) {
+                player.teleport(session.returnSpawnLocation());
+            }
+        }
+        plugin.bossBattleService().clearBossBattle(session);
+        clearBossInventorySnapshots(session);
+        session.setCurrentRound(DepartureGuard.dayToStart(session.currentRound()));
+        long reward = plugin.economyService().quotaForRound(session.currentRound());
+        session.addSharedBalance(reward);
+        if (participants.isEmpty()) {
+            // Nobody is left to sleep through the night, so settle the day right away.
+            concludeBossDay(session, true);
+            return;
+        }
+
+        // The boss replaces today's dungeon run: resume the day at home with the quota already met.
+        session.setActiveParticipants(participants);
+        session.setQuotaClearedByBoss(true);
+        session.setRoundState(RoundState.ACTIVE);
+        session.setState(SessionState.IN_ROUND);
+        plugin.roundTimeService().resumeBeforeSleep(session);
+        broadcastTitle(session, m("boss.title.defeated", "&6ボス撃破"), m("boss.subtitle.quota-cleared", "&aノルマ達成  &eベッドで休もう"), 10, 70, 20);
+        broadcastSound(session, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.7F, 1.05F);
+        broadcastSessionMessage(session, m(
+                "boss.cleared",
+                "&aボスを倒した。今日のノルマは達成扱いだ。報酬 {reward} を共有資金に加えた。ベッドで休めば翌日になる。",
+                "reward", reward,
+                "balance", session.sharedBalance()
+        ));
+    }
+
+    private void finishBossBattleDefeat(GameSession session) {
+        plugin.bossBattleService().removeBossEntities(session);
+        plugin.bossBattleService().clearBossBattle(session);
+        closeOnlineMemberInventories(session);
+        moveOnlineMembersHome(session);
+        // It was all a dream: rewind to the morning of the same day with nothing lost.
+        for (UUID playerId : session.members()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null) {
+                bossInventorySnapshots.remove(playerId);
+            } else if (!player.isDead()) {
+                restoreBossInventory(player);
             }
         }
         session.clearRoundPlayers();
-        session.clearBossBattle();
+        plugin.portalService().clearRoundPortals(session);
+        plugin.roundTimeService().endRound(session);
         session.setRoundState(RoundState.ENDED);
         session.setState(SessionState.LOBBY);
-        broadcastTitle(session, m("boss.title.defeated", "&6ボス撃破"), m("round.subtitle.returned-home", "&eホームに戻った"), 10, 70, 20);
-        broadcastSound(session, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.7F, 1.05F);
-        broadcastSessionMessage(session, m("boss.cleared", "&aボスを倒した。準備ができたら、次の探索を始めて。"));
+        plugin.roundTimeService().skipToMorning(session);
+        announceBossDefeat(session);
+    }
+
+    private void restoreBossInventory(Player player) {
+        ItemStack[] contents = bossInventorySnapshots.remove(player.getUniqueId());
+        if (contents != null) {
+            player.getInventory().setContents(contents);
+        }
+    }
+
+    private void clearBossInventorySnapshots(GameSession session) {
+        bossInventorySnapshots.keySet().removeAll(session.members());
+    }
+
+    private QuotaProgress concludeBossDay(GameSession session, boolean quotaAchieved) {
+        session.completeDay();
+        session.clearRoundPlayers();
+        session.setQuotaClearedByBoss(false);
+        QuotaProgress progress = QuotaProgress.afterRound(
+                session.consecutiveQuotaMisses(),
+                quotaAchieved,
+                plugin.settings().economy().quota().maxConsecutiveMisses()
+        );
+        session.setConsecutiveQuotaMisses(progress.consecutiveMisses());
+        plugin.portalService().clearRoundPortals(session);
+        plugin.roundTimeService().endRound(session);
+        session.setRoundState(RoundState.ENDED);
+        session.setState(progress.gameOver() ? SessionState.GAME_OVER : SessionState.LOBBY);
+        if (!progress.gameOver()) {
+            session.setCurrentRound(session.currentRound() + 1);
+            plugin.roundTimeService().skipToMorning(session);
+        }
+        return progress;
+    }
+
+    private void announceBossDefeat(GameSession session) {
+        String title = m("boss.title.failed", "&4討伐失敗");
+        String subtitle = m("boss.subtitle.failed", "&7全員が倒れた…");
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null) {
+                continue;
+            }
+            player.addPotionEffect(new PotionEffect(PotionEffectType.DARKNESS, 100, 0, false, false, false));
+            player.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 60, 3, false, false, false));
+            sendTitle(player, title, subtitle, 10, 40, 10);
+            Location at = player.getLocation();
+            player.playSound(at, Sound.ENTITY_EVOKER_CELEBRATE, 0.9F, 0.6F);
+            player.playSound(at, Sound.ENTITY_ELDER_GUARDIAN_CURSE, 0.5F, 0.8F);
+            player.playSound(at, Sound.BLOCK_BELL_RESONATE, 0.8F, 0.6F);
+            player.spawnParticle(Particle.SOUL, at.clone().add(0.0D, 1.0D, 0.0D), 40, 0.5D, 0.7D, 0.5D, 0.03D);
+            player.spawnParticle(Particle.LARGE_SMOKE, at.clone().add(0.0D, 1.0D, 0.0D), 25, 0.5D, 0.7D, 0.5D, 0.01D);
+        }
+        broadcastSessionMessage(session, m("boss.failed", "&cボスの討伐に失敗した。全員が倒れた…"));
+        int round = session.currentRound();
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (sessionsById.get(session.sessionId()) != session || session.state() != SessionState.LOBBY
+                    || session.currentRound() != round) {
+                return;
+            }
+            broadcastTitle(
+                    session,
+                    m("boss.title.dream", "&e……夢？"),
+                    m("boss.subtitle.dream", "&7{round}日目の朝に戻っていた", "round", round),
+                    15,
+                    60,
+                    20
+            );
+            broadcastSound(session, Sound.BLOCK_AMETHYST_BLOCK_CHIME, 0.9F, 0.7F);
+            broadcastSound(session, Sound.ENTITY_PLAYER_LEVELUP, 0.4F, 0.6F);
+            broadcastSessionMessage(session, m(
+                    "boss.dream",
+                    "&7悪い夢を見ていたようだ。{round}日目の朝からやり直しだ。持ち物も元に戻っている。",
+                    "round", round
+            ));
+        }, BOSS_DREAM_WAKE_TICKS);
     }
 
     public void cleanupLeftoverWorldFoldersOnStartup() {
@@ -623,7 +757,9 @@ public final class GameSessionManager {
 
         closeOnlineMemberInventories(session);
         EconomyService.SellResult delivery = plugin.economyService().sellDeliveryChestLoot(session);
+        boolean quotaClearedByBoss = session.isQuotaClearedByBoss();
         EconomyService.QuotaResult quota = plugin.economyService().evaluateQuota(session, session.currentRound(), delivery);
+        session.setQuotaClearedByBoss(false);
         RoundEndResult result = new RoundEndResult(delivery, quota);
 
         moveOnlineMembersHome(session);
@@ -634,7 +770,7 @@ public final class GameSessionManager {
         boolean gameOver = allPlayersOut || quota.progress().gameOver();
         session.setRoundState(RoundState.ENDED);
         session.setState(gameOver ? SessionState.GAME_OVER : SessionState.LOBBY);
-        announceRoundEnd(session, result);
+        announceRoundEnd(session, result, quotaClearedByBoss);
 
         if (gameOver) {
             clearOnlineMemberInventories(session);
@@ -737,6 +873,7 @@ public final class GameSessionManager {
         }
 
         sessionWorldService.deleteWorldFolder(worldFolder.toPath(), session.world().getName());
+        clearBossInventorySnapshots(session);
         sessionsById.remove(session.sessionId());
         sessionsByWorld.remove(worldId);
         clearPlayerMappings(session.sessionId());
@@ -975,6 +1112,10 @@ public final class GameSessionManager {
             Bukkit.getScheduler().runTask(plugin, () -> restoreGameOverPlayerAtHome(session, player));
             return;
         }
+        if (!session.isBossBattleActive() && bossInventorySnapshots.containsKey(player.getUniqueId())) {
+            // The boss battle was rewound while this player was still on the death screen.
+            Bukkit.getScheduler().runTask(plugin, () -> restoreBossInventory(player));
+        }
         if (session.isBossBattleActive() && session.state() == SessionState.IN_ROUND && session.deadPlayers().contains(player.getUniqueId())) {
             Bukkit.getScheduler().runTask(plugin, () -> makeBossSpectatorAtDeathLocation(session, player));
             return;
@@ -998,7 +1139,11 @@ public final class GameSessionManager {
             Location deathLocation = session.bossDeathLocation(player.getUniqueId());
             return deathLocation == null ? session.activeBossDestination() : deathLocation;
         }
-        if (session.state() != SessionState.IN_ROUND || session.alivePlayers().contains(player.getUniqueId())) {
+        if (session.state() == SessionState.LOBBY) {
+            // A boss battle can end while a member is still on the death screen.
+            return session.spawnLocation();
+        }
+        if (session.state() != SessionState.IN_ROUND) {
             return null;
         }
         return session.spawnLocation();
@@ -1031,6 +1176,7 @@ public final class GameSessionManager {
         for (UUID playerId : session.members()) {
             spectatorTargetIndexes.remove(playerId);
         }
+        clearBossInventorySnapshots(session);
         sessionsById.remove(session.sessionId());
         sessionsByWorld.remove(session.world().getUID());
         clearPlayerMappings(session.sessionId());
@@ -1049,6 +1195,7 @@ public final class GameSessionManager {
     private void removePlayerFromSession(GameSession session, UUID playerId) {
         session.removeMember(playerId);
         playerToSessionId.remove(playerId);
+        bossInventorySnapshots.remove(playerId);
     }
 
     private void capturePlayerJoin(Player player, Location previousLocation, GameSession targetSession) {
@@ -1141,14 +1288,19 @@ public final class GameSessionManager {
         if (session.state() != SessionState.IN_ROUND || !session.alivePlayers().isEmpty()) {
             return;
         }
+        if (session.isBossBattleActive()) {
+            if (session.isBossDefeated()) {
+                finishBossBattleVictory(session);
+            } else {
+                finishBossBattleDefeat(session);
+            }
+            return;
+        }
 
         moveOnlineMembersHome(session);
         clearOnlineMemberInventories(session);
         plugin.portalService().clearRoundPortals(session);
         plugin.roundTimeService().endRound(session);
-        if (session.isBossBattleActive()) {
-            plugin.bossBattleService().clearBossBattle(session);
-        }
         session.setRoundState(RoundState.ENDED);
         session.setState(SessionState.GAME_OVER);
         announceGameOver(session, m("game-over.reason.all-out", "All players are out."));
@@ -1328,11 +1480,13 @@ public final class GameSessionManager {
         ), Sound.ENTITY_VILLAGER_AMBIENT);
     }
 
-    private void announceRoundEnd(GameSession session, RoundEndResult result) {
+    private void announceRoundEnd(GameSession session, RoundEndResult result, boolean quotaClearedByBoss) {
         String title = result.quotaAchieved()
                 ? m("round.title.quota-achieved", "&aノルマ達成")
                 : m("round.title.quota-missed", "&cノルマ未達");
-        String subtitle = m("round.subtitle.result", "&e納品 {amount}（ノルマ {quota}）",
+        String subtitle = quotaClearedByBoss
+                ? m("round.subtitle.boss-result", "&eボス討伐によりノルマ達成")
+                : m("round.subtitle.result", "&e納品 {amount}（ノルマ {quota}）",
                 "items", result.itemCount(), "amount", result.totalAmount(), "quota", result.quota());
         broadcastTitle(session, title, subtitle, 10, 70, 20);
         if (result.quotaAchieved()) {

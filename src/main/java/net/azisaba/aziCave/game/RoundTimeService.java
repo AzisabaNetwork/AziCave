@@ -31,6 +31,7 @@ public final class RoundTimeService implements Listener {
     private static final long NIGHT_TICKS = 13_000L;
     private static final long SLEEP_DELAY_TICKS = 3L;
     private static final int CHECK_INTERVAL_TICKS = 10;
+    private static final long BOSS_RETURN_GRACE_TICKS = 2_000L;
 
     private final AziCave plugin;
     private final GameSessionManager sessionManager;
@@ -93,6 +94,22 @@ public final class RoundTimeService implements Listener {
         scheduledTransitions.remove(session.sessionId());
         deeplySleepingPlayers.removeAll(session.members());
         forcingSleep.removeAll(session.members());
+    }
+
+    public void resumeBeforeSleep(GameSession session) {
+        endRound(session);
+        // Time kept running during the boss battle; leave enough of the day to reach a bed.
+        if (remainingTicks(session) < BOSS_RETURN_GRACE_TICKS) {
+            long deadline = plugin.settings().roundTiming().deadlineTimeTicks();
+            session.world().setTime(Math.floorMod(deadline - BOSS_RETURN_GRACE_TICKS, DAY_TICKS));
+        }
+    }
+
+    public void skipToMorning(GameSession session) {
+        World world = session.world();
+        long current = Math.floorMod(world.getTime(), DAY_TICKS);
+        long skipAmount = Math.floorMod(plugin.settings().roundTiming().startTimeTicks() - current, DAY_TICKS);
+        world.setFullTime(world.getFullTime() + skipAmount);
     }
 
     public long remainingTicks(GameSession session) {

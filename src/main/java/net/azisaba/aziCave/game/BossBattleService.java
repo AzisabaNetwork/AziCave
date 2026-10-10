@@ -9,7 +9,12 @@ import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Evoker;
+import org.bukkit.entity.EvokerFangs;
+import org.bukkit.entity.Item;
+import org.bukkit.entity.Vex;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Villager;
 import org.bukkit.event.EventHandler;
@@ -31,6 +36,7 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class BossBattleService implements Listener {
+    private static final double BOSS_CLEANUP_RADIUS = 64.0D;
     private final AziCave plugin;
     private final GameSessionManager sessionManager;
     private final Map<String, ActiveBossBattle> activeBattles = new HashMap<>();
@@ -149,8 +155,25 @@ public final class BossBattleService implements Listener {
         active.returnedPlayers().add(player.getUniqueId());
         sessionManager.returnBossPlayerHome(session, player);
         if (hasEveryoneReturned(session, active)) {
-            removeActiveBattle(session);
             sessionManager.finishBossBattleVictory(session);
+        }
+    }
+
+    public void removeBossEntities(GameSession session) {
+        Location center = session.activeBossDestination();
+        if (center == null || center.getWorld() == null) {
+            return;
+        }
+        for (Entity entity : center.getWorld().getNearbyEntities(center, BOSS_CLEANUP_RADIUS, BOSS_CLEANUP_RADIUS, BOSS_CLEANUP_RADIUS)) {
+            if (entity instanceof Evoker || entity instanceof Vex || entity instanceof EvokerFangs) {
+                entity.remove();
+                continue;
+            }
+            // Inventories are rolled back on defeat, so drops left in the arena would be duplicates.
+            Location at = entity.getLocation();
+            if (entity instanceof Item && !session.homeArea().contains(at.getBlockX(), at.getBlockY(), at.getBlockZ())) {
+                entity.remove();
+            }
         }
     }
 
@@ -228,11 +251,18 @@ public final class BossBattleService implements Listener {
 
     private void tickRevives() {
         for (GameSession session : sessionManager.sessions()) {
-            if (!session.isBossBattleActive() || session.isBossDefeated() || session.state() != SessionState.IN_ROUND) {
+            if (!session.isBossBattleActive() || session.state() != SessionState.IN_ROUND) {
                 continue;
             }
             ActiveBossBattle active = activeBattles.get(session.sessionId());
             if (active == null) {
+                continue;
+            }
+            if (session.isBossDefeated()) {
+                // Covers a survivor leaving while the rest have already returned.
+                if (hasEveryoneReturned(session, active)) {
+                    sessionManager.finishBossBattleVictory(session);
+                }
                 continue;
             }
             tickSessionRevives(session, active);
@@ -300,12 +330,8 @@ public final class BossBattleService implements Listener {
     }
 
     private boolean hasEveryoneReturned(GameSession session, ActiveBossBattle active) {
-        for (UUID playerId : session.onlineMembers()) {
-            if (Bukkit.getPlayer(playerId) != null && !active.returnedPlayers().contains(playerId)) {
-                return false;
-            }
-        }
-        return true;
+        // Downed players and members who joined mid-battle cannot reach the portal; only survivors count.
+        return !session.alivePlayers().isEmpty() && active.returnedPlayers().containsAll(session.alivePlayers());
     }
 
     private void broadcast(GameSession session, String message) {
