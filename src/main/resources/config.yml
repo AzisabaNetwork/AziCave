@@ -275,6 +275,9 @@ boss:
   portal-cooldown-seconds: 3
   battles:
     - id: evoker
+      # normal: defeating the boss counts as today's quota and the game continues.
+      # last: defeating the boss clears the game and ends the session.
+      type: normal
       villager-tag: boss_evoker
       min-round: 1
       destination:

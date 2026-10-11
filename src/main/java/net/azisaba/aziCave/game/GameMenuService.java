@@ -443,6 +443,9 @@ public final class GameMenuService implements Listener {
     }
 
     private String stateName(GameSession session) {
+        if (session.isGameCleared()) {
+            return plugin.messages().text("scoreboard.states.game-clear", "ゲームクリア");
+        }
         return plugin.messages().text("scoreboard.states." + session.state().displayKey(), session.state().name());
     }
 

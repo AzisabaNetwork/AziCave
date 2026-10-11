@@ -2,6 +2,7 @@ package net.azisaba.aziCave.game;
 
 import net.azisaba.aziCave.AziCave;
 import net.azisaba.aziCave.config.BossBattleSettings;
+import net.azisaba.aziCave.config.BossType;
 import net.azisaba.aziCave.math.BlockBox;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -37,6 +38,7 @@ import java.util.UUID;
 
 public final class BossBattleService implements Listener {
     private static final double BOSS_CLEANUP_RADIUS = 64.0D;
+    private static final long LAST_BOSS_CLEAR_DELAY_TICKS = 60L;
     private final AziCave plugin;
     private final GameSessionManager sessionManager;
     private final Map<String, ActiveBossBattle> activeBattles = new HashMap<>();
@@ -112,6 +114,16 @@ public final class BossBattleService implements Listener {
         }
 
         session.markBossDefeated();
+        if (active.settings.type() == BossType.LAST) {
+            announceLastBossDefeated(session);
+            // No return portal: the game ends here, so everyone is sent home together after the fanfare.
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (activeBattles.get(session.sessionId()) == active && session.isBossDefeated()) {
+                    sessionManager.finishBossBattleVictory(session);
+                }
+            }, LAST_BOSS_CLEAR_DELAY_TICKS);
+            return;
+        }
         active.installReturnPortal(session.world());
         broadcast(session, m("boss.defeated", "&6ボスを倒した。帰還ポータルが開いた。"));
         for (UUID playerId : session.onlineMembers()) {
@@ -120,6 +132,17 @@ public final class BossBattleService implements Listener {
                 player.sendTitle(m("boss.title.defeated", "&6ボス撃破"), m("boss.subtitle.enter-return-portal", "&e帰還ポータルに入れ"), 10, 70, 20);
                 player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.8F, 1.0F);
                 player.playSound(player.getLocation(), Sound.BLOCK_END_PORTAL_SPAWN, 0.35F, 1.4F);
+            }
+        }
+    }
+
+    private void announceLastBossDefeated(GameSession session) {
+        broadcast(session, m("boss.last-defeated", "&6ラスボスを倒した。"));
+        for (UUID playerId : session.onlineMembers()) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                player.sendTitle(m("boss.title.last-defeated", "&6ラスボス撃破"), "", 10, 50, 10);
+                player.playSound(player.getLocation(), Sound.ENTITY_WITHER_DEATH, 0.5F, 1.2F);
             }
         }
     }
@@ -138,7 +161,7 @@ public final class BossBattleService implements Listener {
         }
 
         ActiveBossBattle active = activeBattles.get(session.sessionId());
-        if (active == null || !active.containsReturnPortal(to)) {
+        if (active == null || active.settings.type() == BossType.LAST || !active.containsReturnPortal(to)) {
             return;
         }
 
@@ -235,7 +258,7 @@ public final class BossBattleService implements Listener {
         );
         activeBattles.put(session.sessionId(), active);
         try {
-            sessionManager.beginBossBattle(session, battle.id(), destination, participants);
+            sessionManager.beginBossBattle(session, battle.id(), battle.type(), destination, participants);
             Bukkit.dispatchCommand(
                     Bukkit.getConsoleSender(),
                     "oomurabito spawn " + session.world().getName() + " "

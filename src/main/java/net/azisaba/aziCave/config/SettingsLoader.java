@@ -316,8 +316,17 @@ public final class SettingsLoader {
                     plugin.getLogger().warning("Ignoring boss battle with invalid portal material: " + values);
                     continue;
                 }
+                BossType type;
+                try {
+                    type = BossType.fromConfig(stringValue(values.get("type")));
+                } catch (IllegalArgumentException ex) {
+                    plugin.getLogger().warning("Unknown boss battle type '" + values.get("type")
+                            + "' for " + id + "; using normal.");
+                    type = BossType.NORMAL;
+                }
                 battles.add(new BossBattleSettings(
                         id.toLowerCase(Locale.ROOT),
+                        type,
                         requireText(stringValue(values.get("villager-tag")), "boss_" + id.toLowerCase(Locale.ROOT)),
                         Math.max(0, intValue(values.get("min-round"), 5)),
                         loadVector(values.get("destination"), new IntVector3(0, 64, 768)),

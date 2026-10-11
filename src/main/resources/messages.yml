@@ -68,6 +68,7 @@ scoreboard:
     lobby: "ロビー"
     in-round: "探索中"
     game-over: "ゲームオーバー"
+    game-clear: "ゲームクリア"
     closing: "終了中"
   boss:
     title: "&5ボス戦"
@@ -117,9 +118,12 @@ shop:
 boss:
   confirm-challenge: "オンラインのメンバー全員で、ボス「{boss}」に挑戦します。"
   defeated: "&6ボスを討伐しました！帰還ポータルが開きました。"
+  last-defeated: "&6ラスボスを討伐しました！"
   title:
     start: "&5ボス戦"
+    last-start: "&4ラスボス戦"
     defeated: "&6ボス撃破"
+    last-defeated: "&6ラスボス撃破"
     failed: "&4討伐失敗"
     dream: "&e……夢？"
   subtitle:
@@ -259,6 +263,7 @@ session:
   boss-spectating-target: "&e{player} を観戦しています。スニークで対象を切り替えられます。味方が死亡地点で蘇生可能です。"
   boss-spectating-death-location: "&e死亡地点を観戦しています。"
   game-over-returned-home: "&eゲームオーバーになったためホームに戻りました。次のセッションを作成する前に退出してください。"
+  game-clear-returned-home: "&eゲームクリアしたためホームに戻りました。次のセッションを作成する前に退出してください。"
   creating: "&eセッションを作成中…"
   kick-not-member: "&cこのセッションワールドに入る権限がありません。"
   kick-closing: "&cセッションワールドが終了したため退出させられました。"
@@ -328,6 +333,13 @@ game-over:
     quota: "ノルマ未達成が続いたため"
     all-out: "全員が脱落したため"
     round-start-failed: "翌日の開始に失敗したため"
+
+game-clear:
+  title: "&6&lゲームクリア"
+  subtitle: "&eラスボスを討伐しました  &7（{round}日目でクリア）"
+  return-message: "&6ゲームクリア！"
+  cleared: "&6ラスボスを討伐しました！ゲームクリアです。"
+  reached-round: "&6クリア記録: {round}日目"
 
 commands:
   player-only: "&cこのコマンドはプレイヤーのみ実行できます。"

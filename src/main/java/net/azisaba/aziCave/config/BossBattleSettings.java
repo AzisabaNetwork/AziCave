@@ -6,6 +6,7 @@ import org.bukkit.Material;
 
 public record BossBattleSettings(
         String id,
+        BossType type,
         String villagerTag,
         int minRound,
         IntVector3 destination,

@@ -1,6 +1,7 @@
 package net.azisaba.aziCave.game;
 
 import net.azisaba.aziCave.AziCave;
+import net.azisaba.aziCave.config.BossType;
 import net.azisaba.aziCave.dungeon.DungeonGenerationResult;
 import net.azisaba.aziCave.dungeon.GenerationExecutionRequest;
 import net.azisaba.aziCave.dungeon.PlacedPiece;
@@ -51,6 +52,8 @@ public final class GameSessionManager {
     private static final long ROUND_RESULT_TITLE_TICKS = 100L;
     private static final long FIRST_ROUND_TITLE_DELAY_TICKS = 70L;
     private static final long BOSS_DREAM_WAKE_TICKS = 60L;
+    private static final int GAME_CLEAR_FIREWORK_VOLLEYS = 5;
+    private static final long GAME_CLEAR_FIREWORK_INTERVAL_TICKS = 20L;
     private static final Map<Attribute, Double> SESSION_ATTRIBUTE_VALUES = Map.of(
             Attribute.MAX_HEALTH, 20.0D,
             Attribute.MOVEMENT_SPEED, 0.1D,
@@ -116,9 +119,9 @@ public final class GameSessionManager {
                 && player.getGameMode() != GameMode.SPECTATOR;
     }
 
-    public void beginBossBattle(GameSession session, String bossBattleId, Location destination, Collection<UUID> participants) {
+    public void beginBossBattle(GameSession session, String bossBattleId, BossType bossType, Location destination, Collection<UUID> participants) {
         if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask(plugin, () -> beginBossBattle(session, bossBattleId, destination, participants));
+            Bukkit.getScheduler().runTask(plugin, () -> beginBossBattle(session, bossBattleId, bossType, destination, participants));
             return;
         }
         if (!sessionsById.containsKey(session.sessionId())) {
@@ -137,7 +140,7 @@ public final class GameSessionManager {
         }
 
         session.setActiveParticipants(activeParticipants);
-        session.startBossBattle(bossBattleId, destination);
+        session.startBossBattle(bossBattleId, bossType, destination);
         session.setRoundState(RoundState.ACTIVE);
         session.setState(SessionState.IN_ROUND);
         for (UUID playerId : activeParticipants) {
@@ -155,7 +158,14 @@ public final class GameSessionManager {
             initializeSessionPlayerState(player);
             player.teleport(destination);
         }
-        broadcastTitle(session, m("boss.title.start", "&5ボス戦"), m("boss.subtitle.start", "&e全員で挑め"), 10, 70, 20);
+        broadcastTitle(
+                session,
+                bossType == BossType.LAST ? m("boss.title.last-start", "&4ラスボス戦") : m("boss.title.start", "&5ボス戦"),
+                m("boss.subtitle.start", "&e全員で挑め"),
+                10,
+                70,
+                20
+        );
         broadcastSound(session, Sound.ENTITY_EVOKER_PREPARE_SUMMON, 0.8F, 0.9F);
         broadcastSessionMessage(session, m("boss.challenging", "&dボス戦だ。{boss}", "boss", bossBattleId));
         updateRoundAfterAliveChange(session);
@@ -193,6 +203,10 @@ public final class GameSessionManager {
 
     public void finishBossBattleVictory(GameSession session) {
         if (!session.isBossBattleActive()) {
+            return;
+        }
+        if (session.isLastBossBattle()) {
+            finishLastBossVictory(session);
             return;
         }
         Set<UUID> participants = new HashSet<>();
@@ -233,6 +247,23 @@ public final class GameSessionManager {
                 "reward", reward,
                 "balance", session.sharedBalance()
         ));
+    }
+
+    private void finishLastBossVictory(GameSession session) {
+        plugin.bossBattleService().removeBossEntities(session);
+        plugin.bossBattleService().clearBossBattle(session);
+        clearBossInventorySnapshots(session);
+        closeOnlineMemberInventories(session);
+        moveOnlineMembersHome(session);
+        session.setCurrentRound(DepartureGuard.dayToStart(session.currentRound()));
+        session.clearRoundPlayers();
+        plugin.portalService().clearRoundPortals(session);
+        plugin.roundTimeService().endRound(session);
+        session.setRoundState(RoundState.ENDED);
+        // The session winds down exactly like a game over; only the presentation differs.
+        session.markGameCleared();
+        session.setState(SessionState.GAME_OVER);
+        announceGameClear(session);
     }
 
     private void finishBossBattleDefeat(GameSession session) {
@@ -1405,7 +1436,9 @@ public final class GameSessionManager {
         initializeSessionPlayerState(player);
         player.teleport(session.spawnLocation());
         GameOverItemSupport.give(plugin, player);
-        sendMessage(player, m("session.game-over-returned-home", "&eGame over. You returned home. Leave this session before creating the next one."));
+        sendMessage(player, session.isGameCleared()
+                ? m("session.game-clear-returned-home", "&eゲームクリア。ホームに戻った。次のセッションを作る前に退出してほしい。")
+                : m("session.game-over-returned-home", "&eGame over. You returned home. Leave this session before creating the next one."));
     }
 
     private void restoreRoundInactivePlayersForNextRound(GameSession session) {
@@ -1607,6 +1640,68 @@ public final class GameSessionManager {
         broadcastSessionMessage(session, m("game-over.next-session", "&e出たあと、/azicave session create か開始メニューから次を作れる。"));
         broadcastSessionMessage(session, m("game-over.auto-close", "&7このセッションはまもなく自動で終了する。"));
         scheduleGameOverShutdown(session);
+    }
+
+    private void announceGameClear(GameSession session) {
+        giveGameOverItems(session);
+        launchGameClearFireworks(session);
+        broadcastTitle(
+                session,
+                m("game-clear.title", "&6&lゲームクリア"),
+                m("game-clear.subtitle", "&eラスボスを討伐した  &7{round}日目", "round", session.currentRound()),
+                10,
+                100,
+                30
+        );
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (sessionsById.get(session.sessionId()) != session || session.state() != SessionState.GAME_OVER) {
+                return;
+            }
+            Component message = plugin.messages().component("game-clear.return-message", "&6ゲームクリア！")
+                    .append(plugin.messages().component("game-over.return-link", "&a[ロビーへ戻る]")
+                            .clickEvent(ClickEvent.runCommand("/azicave session leave")));
+            for (UUID playerId : session.onlineMembers()) {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player != null) {
+                    sendMessage(player, message);
+                }
+            }
+        }, 100L);
+        broadcastSound(session, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.9F, 1.0F);
+        broadcastSound(session, Sound.ENTITY_ENDER_DRAGON_DEATH, 0.3F, 1.2F);
+        broadcastSessionMessage(session, m("game-clear.cleared", "&6ラスボスを討伐した。ゲームクリアだ。"));
+        broadcastSessionMessage(session, m("game-clear.reached-round", "&6クリア {round}日目", "round", session.currentRound()));
+        broadcastSessionMessage(session, m("game-over.leave", "&e手持ちの赤いベッドを右クリックで退出"));
+        broadcastSessionMessage(session, m("game-over.next-session", "&e出たあと、/azicave session create か開始メニューから次を作れる。"));
+        broadcastSessionMessage(session, m("game-over.auto-close", "&7このセッションはまもなく自動で終了する。"));
+        scheduleGameOverShutdown(session);
+    }
+
+    private void launchGameClearFireworks(GameSession session) {
+        for (int volley = 0; volley < GAME_CLEAR_FIREWORK_VOLLEYS; volley++) {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (sessionsById.get(session.sessionId()) != session || session.state() != SessionState.GAME_OVER) {
+                    return;
+                }
+                for (UUID playerId : session.onlineMembers()) {
+                    Player player = Bukkit.getPlayer(playerId);
+                    if (player == null || !player.getWorld().getUID().equals(session.world().getUID())) {
+                        continue;
+                    }
+                    Firework firework = player.getWorld().spawn(player.getLocation(), Firework.class);
+                    FireworkMeta meta = firework.getFireworkMeta();
+                    meta.addEffect(org.bukkit.FireworkEffect.builder()
+                            .with(org.bukkit.FireworkEffect.Type.STAR)
+                            .withColor(Color.YELLOW, Color.AQUA, Color.LIME)
+                            .withFade(Color.WHITE)
+                            .trail(true)
+                            .flicker(true)
+                            .build());
+                    meta.setPower(1);
+                    firework.setFireworkMeta(meta);
+                }
+            }, volley * GAME_CLEAR_FIREWORK_INTERVAL_TICKS);
+        }
     }
 
     private void scheduleGameOverShutdown(GameSession session) {

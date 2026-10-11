@@ -1,5 +1,6 @@
 package net.azisaba.aziCave.game;
 
+import net.azisaba.aziCave.config.BossType;
 import net.azisaba.aziCave.dungeon.PlacedPiece;
 import net.azisaba.aziCave.math.BlockBox;
 import net.azisaba.aziCave.math.IntVector3;
@@ -51,6 +52,8 @@ public final class GameSession {
     private BukkitTask mobSpawnTask;
     private BukkitTask idleTimeoutTask;
     private String activeBossBattleId;
+    private BossType activeBossType;
+    private boolean gameCleared;
     private Location activeBossDestination;
     private boolean bossDefeated;
     private boolean quotaClearedByBoss;
@@ -280,8 +283,21 @@ public final class GameSession {
         return bossDefeated;
     }
 
-    public void startBossBattle(String bossBattleId, Location destination) {
+    public boolean isLastBossBattle() {
+        return activeBossType == BossType.LAST;
+    }
+
+    public boolean isGameCleared() {
+        return gameCleared;
+    }
+
+    public void markGameCleared() {
+        this.gameCleared = true;
+    }
+
+    public void startBossBattle(String bossBattleId, BossType type, Location destination) {
         this.activeBossBattleId = bossBattleId;
+        this.activeBossType = type;
         this.activeBossDestination = destination == null ? null : destination.clone();
         this.bossDefeated = false;
         this.bossDeathLocations.clear();
@@ -293,6 +309,7 @@ public final class GameSession {
 
     public void clearBossBattle() {
         this.activeBossBattleId = null;
+        this.activeBossType = null;
         this.activeBossDestination = null;
         this.bossDefeated = false;
         this.bossDeathLocations.clear();
