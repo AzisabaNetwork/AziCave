@@ -67,7 +67,10 @@ public final class GameSessionManager {
     private final Map<UUID, PlayerAttributeSnapshot> playerAttributeSnapshots = new HashMap<>();
     private final Map<UUID, GameMode> playerGameModeSnapshots = new HashMap<>();
     private final Map<UUID, PlayerVitalsSnapshot> playerVitalsSnapshots = new HashMap<>();
+    private static final int SPECTATOR_RESYNC_INTERVAL_TICKS = 10;
     private final Map<UUID, Integer> spectatorTargetIndexes = new HashMap<>();
+    private final Map<UUID, Integer> spectatorResyncTicks = new HashMap<>();
+    private boolean resyncingSpectatorView;
     private final Map<UUID, ObserverSnapshot> observers = new HashMap<>();
     private final Map<UUID, ItemStack[]> bossInventorySnapshots = new HashMap<>();
     private final Set<UUID> pendingSessionCreations = new HashSet<>();
@@ -1085,6 +1088,46 @@ public final class GameSessionManager {
         sendMessage(player, m("session.now-spectating", "&eNow spectating {player}.", "player", target.getName()));
     }
 
+    public boolean isResyncingSpectatorView() {
+        return resyncingSpectatorView;
+    }
+
+    public void handleSpectatorMove(Player player) {
+        // A client attached to its camera target sends no movement packets, so movement here means the client
+        // dropped the camera (e.g. the target was not tracked yet when the camera packet arrived).
+        if (player.getGameMode() != GameMode.SPECTATOR || !(player.getSpectatorTarget() instanceof Player)) {
+            return;
+        }
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null || session.state() != SessionState.IN_ROUND || !session.isRoundInactivePlayer(player.getUniqueId())) {
+            return;
+        }
+        int now = Bukkit.getCurrentTick();
+        Integer last = spectatorResyncTicks.get(player.getUniqueId());
+        if (last != null && now - last < SPECTATOR_RESYNC_INTERVAL_TICKS) {
+            return;
+        }
+        spectatorResyncTicks.put(player.getUniqueId(), now);
+        Bukkit.getScheduler().runTask(plugin, () -> resyncSpectatorView(player));
+    }
+
+    private void resyncSpectatorView(Player player) {
+        GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
+        if (session == null || session.state() != SessionState.IN_ROUND || !session.isRoundInactivePlayer(player.getUniqueId())
+                || !player.isOnline() || player.getGameMode() != GameMode.SPECTATOR
+                || !(player.getSpectatorTarget() instanceof Player target)
+                || !target.isOnline() || !session.alivePlayers().contains(target.getUniqueId())) {
+            return;
+        }
+        resyncingSpectatorView = true;
+        try {
+            player.setSpectatorTarget(null);
+            player.setSpectatorTarget(target);
+        } finally {
+            resyncingSpectatorView = false;
+        }
+    }
+
     public void ensureSpectatorTarget(Player player) {
         GameSession session = sessionForPlayer(player.getUniqueId()).orElse(null);
         if (session == null || session.state() != SessionState.IN_ROUND || !session.isRoundInactivePlayer(player.getUniqueId())) {
@@ -1175,6 +1218,7 @@ public final class GameSessionManager {
     private void unregisterSession(GameSession session) {
         for (UUID playerId : session.members()) {
             spectatorTargetIndexes.remove(playerId);
+            spectatorResyncTicks.remove(playerId);
         }
         clearBossInventorySnapshots(session);
         sessionsById.remove(session.sessionId());
@@ -1315,6 +1359,7 @@ public final class GameSessionManager {
         GameMode gameMode = playerGameModeSnapshots.remove(player.getUniqueId());
         SpectatorItemSupport.remove(plugin, player);
         spectatorTargetIndexes.remove(player.getUniqueId());
+        spectatorResyncTicks.remove(player.getUniqueId());
         if (player.getGameMode() == GameMode.SPECTATOR) {
             player.setSpectatorTarget(null);
         }
@@ -1414,6 +1459,7 @@ public final class GameSessionManager {
         playerGameModeSnapshots.computeIfAbsent(player.getUniqueId(), ignored -> player.getGameMode());
         SpectatorItemSupport.remove(plugin, player);
         spectatorTargetIndexes.remove(player.getUniqueId());
+        spectatorResyncTicks.remove(player.getUniqueId());
         if (player.getGameMode() == GameMode.SPECTATOR) {
             player.setSpectatorTarget(null);
         }

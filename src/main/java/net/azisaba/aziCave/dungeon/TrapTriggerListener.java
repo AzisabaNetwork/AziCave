@@ -2,6 +2,7 @@ package net.azisaba.aziCave.dungeon;
 
 import net.azisaba.aziCave.AziCave;
 import net.azisaba.aziCave.config.TrapDefinitionSettings;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Entity;
@@ -9,6 +10,8 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.persistence.PersistentDataType;
+
+import java.util.UUID;
 
 public final class TrapTriggerListener implements Listener {
     private final AziCave plugin;
@@ -20,6 +23,9 @@ public final class TrapTriggerListener implements Listener {
     @EventHandler(ignoreCancelled = true)
     public void onPlayerMove(PlayerMoveEvent event) {
         if (event.getTo() == null || event.getTo().getWorld() == null) {
+            return;
+        }
+        if (event.getPlayer().getGameMode() == GameMode.SPECTATOR) {
             return;
         }
         if (event.getFrom().toVector().distanceSquared(event.getTo().toVector()) < 1.0E-6D) {
@@ -39,13 +45,13 @@ public final class TrapTriggerListener implements Listener {
                     PersistentDataType.STRING
             );
             if (trapKey == null) {
-                display.remove();
+                removeTrap(display);
                 continue;
             }
 
             TrapDefinitionSettings definition = plugin.settings().azicave().traps().definition(trapKey);
             if (definition == null) {
-                display.remove();
+                removeTrap(display);
                 continue;
             }
 
@@ -54,7 +60,7 @@ public final class TrapTriggerListener implements Listener {
                 continue;
             }
 
-            display.remove();
+            removeTrap(display);
             event.getPlayer().getWorld().createExplosion(
                     trapCenter.getX(),
                     trapCenter.getY(),
@@ -66,5 +72,22 @@ public final class TrapTriggerListener implements Listener {
             );
             break;
         }
+    }
+
+    private void removeTrap(BlockDisplay display) {
+        String linkedId = display.getPersistentDataContainer().get(
+                DisplayGimmickKeys.linkedDisplayKey(plugin),
+                PersistentDataType.STRING
+        );
+        if (linkedId != null) {
+            try {
+                Entity linked = display.getWorld().getEntity(UUID.fromString(linkedId));
+                if (linked != null) {
+                    linked.remove();
+                }
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        display.remove();
     }
 }

@@ -10,12 +10,19 @@ import org.bukkit.block.Block;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.EntityType;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.util.Transformation;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 
 public final class TrapPopulator {
+    private static final String LANDMINE_KEY = "landmine";
+    private static final float TNT_MARKER_SCALE = 0.4F;
+    private static final float PRESSURE_PLATE_HEIGHT = 1.0F / 16.0F;
+
     private final AziCave plugin;
 
     public TrapPopulator(AziCave plugin) {
@@ -85,6 +92,9 @@ public final class TrapPopulator {
                 PersistentDataType.STRING,
                 definition.key()
         );
+        if (LANDMINE_KEY.equals(definition.key())) {
+            spawnTntMarker(world, displayLocation, display);
+        }
         plugin.debugLogger().log("trap", "spawned", Map.of(
                 "definition", definition.key(),
                 "depth", piece.depth(),
@@ -95,5 +105,27 @@ public final class TrapPopulator {
                 "z", placementBlock.getZ()
         ));
         return 1;
+    }
+
+    private void spawnTntMarker(World world, Location location, BlockDisplay trapDisplay) {
+        if (!(world.spawnEntity(location, EntityType.BLOCK_DISPLAY) instanceof BlockDisplay marker)) {
+            plugin.getLogger().warning("Failed to create landmine TNT display at " + location);
+            return;
+        }
+        float offset = (1.0F - TNT_MARKER_SCALE) / 2.0F;
+        marker.setBlock(Material.TNT.createBlockData());
+        marker.setGravity(false);
+        marker.setInvulnerable(true);
+        marker.setTransformation(new Transformation(
+                new Vector3f(offset, PRESSURE_PLATE_HEIGHT, offset),
+                new AxisAngle4f(),
+                new Vector3f(TNT_MARKER_SCALE, TNT_MARKER_SCALE, TNT_MARKER_SCALE),
+                new AxisAngle4f()
+        ));
+        trapDisplay.getPersistentDataContainer().set(
+                DisplayGimmickKeys.linkedDisplayKey(plugin),
+                PersistentDataType.STRING,
+                marker.getUniqueId().toString()
+        );
     }
 }

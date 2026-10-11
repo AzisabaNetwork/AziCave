@@ -8,6 +8,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
@@ -99,7 +100,15 @@ public final class SessionPlayerListener implements Listener {
     }
 
     @EventHandler(ignoreCancelled = true)
+    public void onSpectatorMove(PlayerMoveEvent event) {
+        sessionManager.handleSpectatorMove(event.getPlayer());
+    }
+
+    @EventHandler(ignoreCancelled = true)
     public void onStopSpectating(PlayerStopSpectatingEntityEvent event) {
+        if (sessionManager.isResyncingSpectatorView()) {
+            return;
+        }
         org.bukkit.entity.Player player = event.getPlayer();
         org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
             if (player.isOnline()) {
