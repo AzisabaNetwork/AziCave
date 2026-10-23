@@ -455,8 +455,9 @@ final class StatisticsDatabase implements AutoCloseable {
     }
 
     private List<RankingEntry> ranking(Connection connection, RankingWindow window, int topSize) throws SQLException {
-        String filter = window.isTotal() ? "" : " WHERE reached_at >= ? AND reached_at < ?";
-        String joinFilter = window.isTotal() ? "" : " AND reached.reached_at >= ? AND reached.reached_at < ?";
+        // Trailing newlines keep the fragments from fusing with the next text block line.
+        String filter = window.isTotal() ? "" : "WHERE reached_at >= ? AND reached_at < ?\n";
+        String joinFilter = window.isTotal() ? "" : "AND reached.reached_at >= ? AND reached.reached_at < ?\n";
         String sql = """
                 SELECT best.player_uuid, statistics.player_name, best.max_round,
                        MIN(reached.reached_at) AS reached_at
