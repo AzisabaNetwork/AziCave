@@ -128,6 +128,8 @@ final class StatisticsDatabase implements AutoCloseable {
     static StatisticsDatabase open(DatabaseSettings settings) throws SQLException {
         HikariConfig hikari = new HikariConfig();
         hikari.setPoolName("AziCave-Statistics");
+        // DriverManager cannot discover the shaded driver from the plugin class loader, so name it explicitly.
+        hikari.setDriverClassName(org.mariadb.jdbc.Driver.class.getName());
         hikari.setJdbcUrl(settings.jdbcUrl());
         hikari.setUsername(settings.username());
         hikari.setPassword(settings.password());
