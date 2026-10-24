@@ -7,10 +7,12 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitTask;
@@ -120,6 +122,24 @@ public final class LeaderboardDisplayService {
                     displaySettings.yaw(),
                     displaySettings.pitch()
             );
+            // A chunk unload invalidates our reference while the entity may still exist, so never spawn blind:
+            // wait until the chunk's entities are loaded, then reuse what is already there.
+            int chunkX = location.getBlockX() >> 4;
+            int chunkZ = location.getBlockZ() >> 4;
+            if (!world.isChunkLoaded(chunkX, chunkZ)) {
+                displays.remove(period);
+                continue;
+            }
+            Chunk chunk = world.getChunkAt(chunkX, chunkZ);
+            if (!chunk.isEntitiesLoaded()) {
+                displays.remove(period);
+                continue;
+            }
+            TextDisplay existing = adoptExisting(chunk, period);
+            if (existing != null) {
+                displays.put(period, existing);
+                continue;
+            }
             TextDisplay display = world.spawn(location, TextDisplay.class, spawned -> {
                 spawned.setGravity(false);
                 spawned.setInvulnerable(true);
@@ -135,6 +155,25 @@ public final class LeaderboardDisplayService {
             });
             displays.put(period, display);
         }
+    }
+
+    private TextDisplay adoptExisting(Chunk chunk, RankingPeriod period) {
+        TextDisplay kept = null;
+        for (Entity entity : chunk.getEntities()) {
+            if (!(entity instanceof TextDisplay display)) {
+                continue;
+            }
+            String tagged = display.getPersistentDataContainer().get(periodKey, PersistentDataType.STRING);
+            if (!period.name().equals(tagged)) {
+                continue;
+            }
+            if (kept == null) {
+                kept = display;
+            } else {
+                display.remove();
+            }
+        }
+        return kept;
     }
 
     private void render(Map<RankingPeriod, List<RankingEntry>> rankings) {
