@@ -15,6 +15,7 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerTakeLecternBookEvent;
 
 public class GlobalJoinQuitListener implements Listener {
     private final AziCave plugin;
@@ -54,7 +55,14 @@ public class GlobalJoinQuitListener implements Listener {
     }
 
     @EventHandler
-    public void onTake(PlayerInsertLecternBookEvent e) {
+    public void onTake(PlayerTakeLecternBookEvent e) {
+        if (e.getPlayer().getGameMode() != GameMode.CREATIVE) {
+            e.setCancelled(true);
+        }
+    }
+
+    @EventHandler
+    public void onInsert(PlayerInsertLecternBookEvent e) {
         if (e.getBlock().getWorld().getName().equals("world") || e.getBlock().getWorld().getName().equals("azicave")) {
             if (e.getPlayer().getGameMode() != org.bukkit.GameMode.CREATIVE) {
                 e.setCancelled(true);
