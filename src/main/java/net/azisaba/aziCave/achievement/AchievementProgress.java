@@ -16,8 +16,6 @@ public enum AchievementProgress {
     TOTAL_PLAY_HOURS("azisaba:azicave/total-play-hours", statistics -> toHours(statistics.totalPlaySeconds())),
     LONGEST_PLAY_HOURS("azisaba:azicave/longest-play-hours", statistics -> toHours(statistics.longestPlaySeconds())),
     MOB_KILLS("azisaba:azicave/mob-kills", PlayerStatistics::mobKills),
-    CHESTS_OPENED("azisaba:azicave/chests-opened", PlayerStatistics::chestsOpened),
-    TREASURES_COLLECTED("azisaba:azicave/treasures-collected", PlayerStatistics::treasuresCollected),
     TOTAL_SALES("azisaba:azicave/total-sales", PlayerStatistics::totalSales);
 
     private final String key;
