@@ -17,11 +17,21 @@ repositories {
         name = "enginehub-repo"
         url = "https://maven.enginehub.org/repo/"
     }
+    maven {
+        name = "azisaba-repo"
+        url = "https://repo.azisaba.net/repository/maven-public/"
+    }
 }
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
     compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.4.0")
+    compileOnly("net.azisaba.azisabaachievements:api:1.2.0-SNAPSHOT") {
+        transitive = false
+    }
+    compileOnly("net.azisaba.azisabaachievements:spigot:1.2.0-SNAPSHOT") {
+        transitive = false
+    }
 
     implementation("com.zaxxer:HikariCP:7.1.0") {
         exclude group: "org.slf4j", module: "slf4j-api"

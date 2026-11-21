@@ -1,5 +1,7 @@
 package net.azisaba.aziCave;
 
+import net.azisaba.aziCave.achievement.AchievementBridge;
+import net.azisaba.aziCave.achievement.MissingAchievementBridge;
 import net.azisaba.aziCave.author.MissingSelectionProvider;
 import net.azisaba.aziCave.author.SelectionProvider;
 import net.azisaba.aziCave.author.TemplateAuthoringService;
@@ -67,6 +69,7 @@ public final class AziCave extends JavaPlugin {
     private MiningService miningService;
     private StatisticsService statisticsService;
     private LeaderboardDisplayService leaderboardDisplayService;
+    private AchievementBridge achievementBridge;
 
     @Override
     public void onEnable() {
@@ -78,6 +81,8 @@ public final class AziCave extends JavaPlugin {
         gameSessionManager.cleanupLeftoverWorldFoldersOnStartup();
         registerCommands();
         registerListeners();
+        achievementBridge = createAchievementBridge();
+        getLogger().info("AziCave achievements=" + achievementBridge.describeAvailability());
     }
 
     @Override
@@ -111,6 +116,9 @@ public final class AziCave extends JavaPlugin {
         }
         if (leaderboardDisplayService != null) {
             leaderboardDisplayService.shutdown();
+        }
+        if (achievementBridge != null) {
+            achievementBridge.shutdown();
         }
         if (statisticsService != null) {
             statisticsService.shutdown();
@@ -281,6 +289,10 @@ public final class AziCave extends JavaPlugin {
         return statisticsService;
     }
 
+    public AchievementBridge achievementBridge() {
+        return achievementBridge;
+    }
+
     public void setDebugEnabled(boolean enabled) {
         debugLogger.setEnabled(enabled);
     }
@@ -326,6 +338,21 @@ public final class AziCave extends JavaPlugin {
         } catch (ReflectiveOperationException | LinkageError ex) {
             getLogger().severe("Failed to initialize WorldEdit adapter: " + ex.getMessage());
             return new MissingSchematicAdapter("WorldEdit adapter initialization failed");
+        }
+    }
+
+    private AchievementBridge createAchievementBridge() {
+        if (getServer().getPluginManager().getPlugin("AzisabaAchievements") == null) {
+            return new MissingAchievementBridge("AzisabaAchievements plugin not found");
+        }
+        try {
+            Class<?> type = Class.forName("net.azisaba.aziCave.achievement.AzisabaAchievementsBridge");
+            return (AchievementBridge) type
+                    .getConstructor(AziCave.class)
+                    .newInstance(this);
+        } catch (ReflectiveOperationException | LinkageError ex) {
+            getLogger().severe("Failed to initialize AzisabaAchievements bridge: " + ex.getMessage());
+            return new MissingAchievementBridge("AzisabaAchievements bridge initialization failed");
         }
     }
 

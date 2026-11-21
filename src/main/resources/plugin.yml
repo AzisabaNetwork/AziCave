@@ -5,6 +5,7 @@ description: Roguelike dungeon generator with external schematic templates.
 api-version: '1.21'
 softdepend:
   - WorldEdit
+  - AzisabaAchievements
 commands:
   azicave:
     description: Manage AziCave dungeon generation and game sessions.

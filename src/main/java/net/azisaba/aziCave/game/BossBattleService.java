@@ -114,6 +114,7 @@ public final class BossBattleService implements Listener {
         }
 
         session.markBossDefeated();
+        plugin.achievementBridge().recordBossDefeat(session.onlineMembers());
         if (active.settings.type() == BossType.LAST) {
             announceLastBossDefeated(session);
             // No return portal: the game ends here, so everyone is sent home together after the fanfare.

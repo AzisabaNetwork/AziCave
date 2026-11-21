@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 public final class StatisticsService {
     private static final long FAILURE_LOG_INTERVAL_MILLIS = 30_000L;
@@ -40,6 +41,8 @@ public final class StatisticsService {
     private volatile DatabaseSettings configuredSettings;
     private volatile boolean available;
     private volatile long circuitOpenUntilMillis;
+    private volatile Consumer<UUID> playerUpdateListener = playerId -> {
+    };
     private long lastReconnectAttemptMillis = Long.MIN_VALUE;
 
     public StatisticsService(AziCave plugin) {
@@ -64,11 +67,19 @@ public final class StatisticsService {
         return available;
     }
 
+    /**
+     * Called on the statistics thread with each player whose statistics were written successfully.
+     */
+    public void setPlayerUpdateListener(Consumer<UUID> listener) {
+        this.playerUpdateListener = Objects.requireNonNull(listener, "listener");
+    }
+
     public CompletableFuture<Void> recordSessionJoin(UUID runId, Player player) {
         PlayerSnapshot snapshot = PlayerSnapshot.from(player);
         Instant now = Instant.now();
         return submitDatabase("record session join", database -> {
             database.recordSessionJoin(requireRunId(runId), snapshot, now);
+            notifyPlayerUpdated(snapshot.playerId());
             return null;
         }, null);
     }
@@ -79,6 +90,7 @@ public final class StatisticsService {
         Instant now = Instant.now();
         return submitDatabase("record session exit", database -> {
             database.recordSessionExit(requireRunId(runId), playerId, reason, now);
+            notifyPlayerUpdated(playerId);
             return null;
         }, null);
     }
@@ -95,6 +107,7 @@ public final class StatisticsService {
         Instant now = Instant.now();
         return submitDatabase("record round reached", database -> {
             database.recordRoundReached(requireRunId(runId), snapshots, round, configuredMaxDepth, now);
+            snapshots.forEach(snapshot -> notifyPlayerUpdated(snapshot.playerId()));
             return null;
         }, null);
     }
@@ -119,6 +132,7 @@ public final class StatisticsService {
         Instant now = Instant.now();
         return submitDatabase("record max depth", database -> {
             database.recordMaxDepth(requireRunId(runId), snapshot, depth, now);
+            notifyPlayerUpdated(snapshot.playerId());
             return null;
         }, null);
     }
@@ -219,8 +233,17 @@ public final class StatisticsService {
         Instant now = Instant.now();
         return submitDatabase(operation, database -> {
             database.recordCounterEvent(requireRunId(runId), snapshot, eventId, event, value, now);
+            notifyPlayerUpdated(snapshot.playerId());
             return null;
         }, null);
+    }
+
+    private void notifyPlayerUpdated(UUID playerId) {
+        try {
+            playerUpdateListener.accept(playerId);
+        } catch (RuntimeException ex) {
+            logFailure("notify statistics update", ex);
+        }
     }
 
     private void replaceDatabase(DatabaseSettings settings) {
